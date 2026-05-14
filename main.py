@@ -44,7 +44,7 @@ def load_thumbnail(path: str, maxw=THUMB_W, maxh=THUMB_H):
     try:
         img = Image.open(path)
         img.thumbnail((maxw, maxh), Image.LANCZOS)
-        return ImageTk.PhotoImage(img)
+        return ctk.CTkImage(img, size=(img.width, img.height))
     except Exception:
         return None
 
@@ -276,6 +276,101 @@ class DetectDuplicatesDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+def is_bad_version(name: str) -> bool:
+    name_lower = name.lower()
+    bad_tags = ['[b]', '[bad dump]', '[beta]', '[proto]', '[sample]', '[demo]', '[trailer]']
+    return any(tag in name_lower for tag in bad_tags)
+
+def get_revision(name: str) -> int:
+    match = re.search(r'\(Rev (\d+)\)', name, re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+class DetectBadVersionsDialog(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Detect and Hide Bad Versions")
+        self.geometry("800x600")
+        self.resizable(False, False)
+        self.grab_set()
+        self._visible_games = []
+        self._hidden_games = []
+        self._build()
+        self._scan_bad_versions()
+
+    def _build(self):
+        # Top: visible games
+        top = ctk.CTkFrame(self)
+        top.pack(fill="both", expand=True, padx=14, pady=(14, 6))
+        ctk.CTkLabel(top, text="Games to Keep Visible:", font=("", 12, "bold")).pack(anchor="w", pady=(0, 6))
+        self._visible_tree = ttk.Treeview(top, columns=("name",), show="headings", height=8)
+        self._visible_tree.heading("name", text="Game Name")
+        self._visible_tree.column("name", width=700)
+        vsb1 = ttk.Scrollbar(top, orient="vertical", command=self._visible_tree.yview)
+        self._visible_tree.configure(yscrollcommand=vsb1.set)
+        self._visible_tree.pack(side="left", fill="both", expand=True)
+        vsb1.pack(side="right", fill="y")
+
+        # Bottom: hidden games
+        bottom = ctk.CTkFrame(self)
+        bottom.pack(fill="both", expand=True, padx=14, pady=6)
+        ctk.CTkLabel(bottom, text="Games to Hide:", font=("", 12, "bold")).pack(anchor="w", pady=(0, 6))
+        self._hidden_tree = ttk.Treeview(bottom, columns=("name",), show="headings", height=8)
+        self._hidden_tree.heading("name", text="Game Name")
+        self._hidden_tree.column("name", width=700)
+        vsb2 = ttk.Scrollbar(bottom, orient="vertical", command=self._hidden_tree.yview)
+        self._hidden_tree.configure(yscrollcommand=vsb2.set)
+        self._hidden_tree.pack(side="left", fill="both", expand=True)
+        vsb2.pack(side="right", fill="y")
+
+        btnrow = ctk.CTkFrame(self, fg_color="transparent")
+        btnrow.pack(side="bottom", pady=14, padx=14, fill="x")
+        ctk.CTkButton(btnrow, text="Apply", command=self._apply, fg_color=COL_HIGHLIGHT).pack(side="right", padx=4)
+        ctk.CTkButton(btnrow, text="Cancel", command=self.destroy, fg_color=COL_ACCENT).pack(side="right", padx=4)
+
+    def _scan_bad_versions(self):
+        if not self.parent._gamelist:
+            return
+        groups = {}
+        for g in self.parent._gamelist.games:
+            base = get_base_name(g.name)
+            if base not in groups:
+                groups[base] = []
+            groups[base].append(g)
+
+        for base, games in groups.items():
+            if len(games) > 1:
+                good_games = [g for g in games if not is_bad_version(g.name)]
+                bad_games = [g for g in games if is_bad_version(g.name)]
+                self._hidden_games.extend(bad_games)
+                if len(good_games) > 1:
+                    # Sort by revision descending
+                    good_games.sort(key=lambda g: get_revision(g.name), reverse=True)
+                    self._visible_games.append(good_games[0])
+                    self._hidden_games.extend(good_games[1:])
+                elif good_games:
+                    self._visible_games.append(good_games[0])
+                # If no good games, maybe keep all? But since bad, perhaps hide all except one
+                elif bad_games:
+                    bad_games.sort(key=lambda g: get_revision(g.name), reverse=True)
+                    self._visible_games.append(bad_games[0])
+                    self._hidden_games.extend(bad_games[1:])
+
+        # Populate trees
+        for g in self._visible_games:
+            self._visible_tree.insert("", "end", values=(g.name,))
+        for g in self._hidden_games:
+            self._hidden_tree.insert("", "end", values=(g.name,))
+
+    def _apply(self):
+        for g in self._hidden_games:
+            g.hidden = True
+        self.parent._apply_filter()
+        self.parent._status(f"Hidden {len(self._hidden_games)} bad/alternate version games")
+        self.destroy()
+
+
 # ── Game Edit Dialog ──────────────────────────────────────────────────────────
 
 class GameEditDialog(ctk.CTkToplevel):
@@ -385,12 +480,13 @@ class GameEditDialog(ctk.CTkToplevel):
         if not img_path_raw:
             img_path_raw = self.game.get("image")
         abs_path = self.gamelist.resolve_media_path(img_path_raw)
+        self._thumb_label.configure(image=None)  # Clear previous image
         if abs_path:
             self._thumb_img = load_thumbnail(abs_path, 220, 220)
             if self._thumb_img:
                 self._thumb_label.configure(image=self._thumb_img, text="")
                 return
-        self._thumb_label.configure(image=None, text="No image")
+        self._thumb_label.configure(text="No image")
 
     def _browse_media(self, field: str, var: ctk.StringVar):
         path = filedialog.askopenfilename(
@@ -658,6 +754,7 @@ class App(ctk.CTk):
         om.add_command(label="Set Name from Filename", command=self._set_name_from_filename)
         om.add_command(label="Batch Favorite by Names", command=self._batch_favorite)
         om.add_command(label="Detect and Hide Duplicates", command=self._detect_duplicates)
+        om.add_command(label="Detect and Hide Bad Versions", command=self._detect_bad_versions)
 
         self.bind("<Control-o>", lambda e: self._open_file())
         self.bind("<Control-s>", lambda e: self._save())
@@ -917,11 +1014,15 @@ class App(ctk.CTk):
         # Update preview
         img_raw = g.get("image")
         abs_img = self._gamelist.resolve_media_path(img_raw) if self._gamelist else None
+        self._preview_label.configure(image=None)  # Clear previous image
         if abs_img:
             self._preview_img = load_thumbnail(abs_img, 240, 240)
-            self._preview_label.configure(image=self._preview_img, text="")
+            if self._preview_img:
+                self._preview_label.configure(image=self._preview_img, text="")
+            else:
+                self._preview_label.configure(text="No image")
         else:
-            self._preview_label.configure(image=None, text="No image")
+            self._preview_label.configure(text="No image")
         # Info box
         info = (
             f"Name:   {g.name}\n"
@@ -1008,6 +1109,13 @@ class App(ctk.CTk):
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
         dlg = DetectDuplicatesDialog(self)
+        self.wait_window(dlg)
+
+    def _detect_bad_versions(self):
+        if not self._gamelist:
+            messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
+            return
+        dlg = DetectBadVersionsDialog(self)
         self.wait_window(dlg)
 
     # ── ROM Scanner ───────────────────────────────────────────────────────────
