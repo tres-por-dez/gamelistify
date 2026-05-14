@@ -181,6 +181,101 @@ class BatchFavoriteDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+# ── Detect Duplicates Dialog ──────────────────────────────────────────────────
+
+import re
+
+def get_base_name(name: str) -> str:
+    # Remove region tags like (USA), [U], (Europe), etc.
+    name = re.sub(r'\s*\([^)]*\)', '', name)  # Remove (anything)
+    name = re.sub(r'\s*\[[^\]]*\]', '', name)  # Remove [anything]
+    return name.strip()
+
+def get_priority(name: str) -> int:
+    name_lower = name.lower()
+    if 'usa' in name_lower or 'ntsc-u' in name_lower:
+        return 1
+    elif 'japan' in name_lower or 'ntsc-j' in name_lower:
+        return 2
+    elif 'europe' in name_lower or 'pal' in name_lower:
+        return 3
+    else:
+        return 4
+
+class DetectDuplicatesDialog(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Detect and Hide Duplicates")
+        self.geometry("800x600")
+        self.resizable(False, False)
+        self.grab_set()
+        self._visible_games = []
+        self._hidden_games = []
+        self._build()
+        self._scan_duplicates()
+
+    def _build(self):
+        # Top: visible games
+        top = ctk.CTkFrame(self)
+        top.pack(fill="both", expand=True, padx=14, pady=(14, 6))
+        ctk.CTkLabel(top, text="Games to Keep Visible:", font=("", 12, "bold")).pack(anchor="w", pady=(0, 6))
+        self._visible_tree = ttk.Treeview(top, columns=("name",), show="headings", height=8)
+        self._visible_tree.heading("name", text="Game Name")
+        self._visible_tree.column("name", width=700)
+        vsb1 = ttk.Scrollbar(top, orient="vertical", command=self._visible_tree.yview)
+        self._visible_tree.configure(yscrollcommand=vsb1.set)
+        self._visible_tree.pack(side="left", fill="both", expand=True)
+        vsb1.pack(side="right", fill="y")
+
+        # Bottom: hidden games
+        bottom = ctk.CTkFrame(self)
+        bottom.pack(fill="both", expand=True, padx=14, pady=6)
+        ctk.CTkLabel(bottom, text="Games to Hide:", font=("", 12, "bold")).pack(anchor="w", pady=(0, 6))
+        self._hidden_tree = ttk.Treeview(bottom, columns=("name",), show="headings", height=8)
+        self._hidden_tree.heading("name", text="Game Name")
+        self._hidden_tree.column("name", width=700)
+        vsb2 = ttk.Scrollbar(bottom, orient="vertical", command=self._hidden_tree.yview)
+        self._hidden_tree.configure(yscrollcommand=vsb2.set)
+        self._hidden_tree.pack(side="left", fill="both", expand=True)
+        vsb2.pack(side="right", fill="y")
+
+        btnrow = ctk.CTkFrame(self, fg_color="transparent")
+        btnrow.pack(side="bottom", pady=14, padx=14, fill="x")
+        ctk.CTkButton(btnrow, text="Apply", command=self._apply, fg_color=COL_HIGHLIGHT).pack(side="right", padx=4)
+        ctk.CTkButton(btnrow, text="Cancel", command=self.destroy, fg_color=COL_ACCENT).pack(side="right", padx=4)
+
+    def _scan_duplicates(self):
+        if not self.parent._gamelist:
+            return
+        groups = {}
+        for g in self.parent._gamelist.games:
+            base = get_base_name(g.name)
+            if base not in groups:
+                groups[base] = []
+            groups[base].append(g)
+
+        for base, games in groups.items():
+            if len(games) > 1:
+                # Sort by priority
+                games.sort(key=lambda g: get_priority(g.name))
+                self._visible_games.append(games[0])
+                self._hidden_games.extend(games[1:])
+
+        # Populate trees
+        for g in self._visible_games:
+            self._visible_tree.insert("", "end", values=(g.name,))
+        for g in self._hidden_games:
+            self._hidden_tree.insert("", "end", values=(g.name,))
+
+    def _apply(self):
+        for g in self._hidden_games:
+            g.hidden = True
+        self.parent._apply_filter()
+        self.parent._status(f"Hidden {len(self._hidden_games)} duplicate games")
+        self.destroy()
+
+
 # ── Game Edit Dialog ──────────────────────────────────────────────────────────
 
 class GameEditDialog(ctk.CTkToplevel):
@@ -562,16 +657,24 @@ class App(ctk.CTk):
         om.add_command(label="Settings…", command=self._open_settings)
         om.add_command(label="Set Name from Filename", command=self._set_name_from_filename)
         om.add_command(label="Batch Favorite by Names", command=self._batch_favorite)
+        om.add_command(label="Detect and Hide Duplicates", command=self._detect_duplicates)
 
         self.bind("<Control-o>", lambda e: self._open_file())
         self.bind("<Control-s>", lambda e: self._save())
         self.bind("<Control-a>", lambda e: self._select_all())
+        self.bind("<Control-d>", lambda e: self._delete_selected())
+        self.bind("<Control-i>", lambda e: self._invert_selection())
+        self.bind("<Control-f>", lambda e: self._focus_filter())
 
     def _update_recent_menu(self):
         self._recent_menu.delete(0, "end")
         for path in settings.get("recent_files", []):
             self._recent_menu.add_command(
                 label=path, command=lambda p=path: self._load_gamelist(p))
+
+    def _focus_filter(self):
+        if hasattr(self, '_filter_entry'):
+            self._filter_entry.focus()
 
     # ── UI Layout ─────────────────────────────────────────────────────────────
 
@@ -605,7 +708,8 @@ class App(ctk.CTk):
         ctk.CTkLabel(toolbar, text="Filter:").pack(side="right", padx=(4, 2))
         self._filter_var = ctk.StringVar()
         self._filter_var.trace_add("write", lambda *_: self._apply_filter())
-        ctk.CTkEntry(toolbar, textvariable=self._filter_var, width=180).pack(side="right", padx=(0, 8), pady=6)
+        self._filter_entry = ctk.CTkEntry(toolbar, textvariable=self._filter_var, width=180)
+        self._filter_entry.pack(side="right", padx=(0, 8), pady=6)
 
         # Show hidden checkbox
         self._show_hidden_var = ctk.BooleanVar(value=True)
@@ -897,6 +1001,13 @@ class App(ctk.CTk):
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
         dlg = BatchFavoriteDialog(self)
+        self.wait_window(dlg)
+
+    def _detect_duplicates(self):
+        if not self._gamelist:
+            messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
+            return
+        dlg = DetectDuplicatesDialog(self)
         self.wait_window(dlg)
 
     # ── ROM Scanner ───────────────────────────────────────────────────────────
