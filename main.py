@@ -8,6 +8,7 @@ import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from pathlib import Path
 import customtkinter as ctk
 from PIL import Image
 from PIL import ImageTk
@@ -470,6 +471,253 @@ class ReviewHiddenFavoritesDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+# ── Folder Icon Manager Dialog ────────────────────────────────────────────────
+
+from folder_icon_manager import FolderIconManager
+
+class FolderIconManagerDialog(ctk.CTkToplevel):
+    """Manage folder icons in gamelist.xml"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Manage Folder Icons")
+        self.geometry("900x600")
+        self.resizable(True, True)
+        self.grab_set()
+        
+        if not parent._gamelist:
+            messagebox.showwarning("No gamelist", "Please open a gamelist first.")
+            self.destroy()
+            return
+        
+        self.manager = FolderIconManager(parent._gamelist, parent._gamelist.xml_path)
+        self._current_folder_idx = 0
+        self._current_icon_img = None
+        self._new_icon_img = None
+        self._build()
+        self._load_folder(0)
+
+    def _build(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        # Main container
+        main = ctk.CTkFrame(self)
+        main.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_columnconfigure(1, weight=1)
+        main.grid_rowconfigure(1, weight=1)
+
+        # Top: folder list
+        top = ctk.CTkFrame(main)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        
+        header_frame = ctk.CTkFrame(top, fg_color="transparent")
+        header_frame.pack(fill="x", anchor="w")
+        ctk.CTkLabel(header_frame, text=f"Folders found: {len(self.manager.folders)}", font=("", 12, "bold")).pack(side="left")
+        ctk.CTkButton(header_frame, text="Add Missing Folders", command=self._add_missing_folders, width=150, fg_color=COL_ACCENT).pack(side="right", padx=0)
+        
+        list_frame = ctk.CTkFrame(top)
+        list_frame.pack(fill="x", pady=(6, 0))
+        list_frame.grid_columnconfigure(0, weight=1)
+        
+        self._folder_var = ctk.StringVar()
+        self._folder_dropdown = ctk.CTkOptionMenu(
+            list_frame,
+            variable=self._folder_var,
+            values=[f.name for f in self.manager.folders],
+            command=self._on_folder_select
+        )
+        self._folder_dropdown.pack(fill="x")
+        
+        # Hidden checkbox
+        hidden_frame = ctk.CTkFrame(top, fg_color="transparent")
+        hidden_frame.pack(fill="x", pady=(6, 0))
+        self._hidden_var = ctk.BooleanVar()
+        self._hidden_checkbox = ctk.CTkCheckBox(hidden_frame, text="Hidden", variable=self._hidden_var)
+        self._hidden_checkbox.pack(anchor="w")
+
+        # Middle: current icon | new icon
+        mid = ctk.CTkFrame(main)
+        mid.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+        mid.grid_columnconfigure(0, weight=1)
+        mid.grid_columnconfigure(1, weight=1)
+
+        # Left: current icon
+        left = ctk.CTkFrame(mid)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        ctk.CTkLabel(left, text="Current Icon", font=("", 11, "bold")).pack(anchor="w", pady=(0, 4))
+        self._current_icon_label = ctk.CTkLabel(left, text="No icon", width=200, height=200, fg_color=COL_HEADER)
+        self._current_icon_label.pack()
+
+        # Right: new icon selection
+        right = ctk.CTkFrame(mid)
+        right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        ctk.CTkLabel(right, text="New Icon", font=("", 11, "bold")).pack(anchor="w", pady=(0, 4))
+        
+        # Icon selector with browse button
+        icon_frame = ctk.CTkFrame(right)
+        icon_frame.pack(fill="both", expand=True)
+        icon_frame.grid_columnconfigure(0, weight=1)
+        icon_frame.grid_rowconfigure(1, weight=1)
+        
+        browse_btn_frame = ctk.CTkFrame(icon_frame, fg_color="transparent")
+        browse_btn_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ctk.CTkButton(browse_btn_frame, text="Browse…", command=self._browse_icon, width=80).pack(side="left", padx=2)
+        self._icon_path_label = ctk.CTkLabel(browse_btn_frame, text="No file selected", text_color="gray", font=("", 10))
+        self._icon_path_label.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        
+        self._new_icon_label = ctk.CTkLabel(icon_frame, text="Preview", width=200, height=200, fg_color=COL_HEADER)
+        self._new_icon_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        
+        self._selected_icon_path = None
+
+        # Bottom: buttons
+        btm = ctk.CTkFrame(main, fg_color="transparent")
+        btm.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        
+        ctk.CTkButton(btm, text="Previous", command=self._prev_folder, width=100).pack(side="left", padx=2)
+        ctk.CTkButton(btm, text="Apply to this folder", command=self._apply_current, fg_color=COL_ACCENT, width=150).pack(side="left", padx=2)
+        ctk.CTkButton(btm, text="Next", command=self._next_folder, width=100).pack(side="left", padx=2)
+        
+        ctk.CTkButton(btm, text="Done", command=self._done, fg_color=COL_HIGHLIGHT, width=80).pack(side="right", padx=2)
+        ctk.CTkButton(btm, text="Cancel", command=self.destroy, fg_color=COL_ACCENT, width=80).pack(side="right", padx=2)
+
+        self._status_label = ctk.CTkLabel(main, text="", font=("", 10))
+        self._status_label.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+    def _load_folder(self, idx: int):
+        """Load folder at given index."""
+        if not 0 <= idx < len(self.manager.folders):
+            return
+        
+        self._current_folder_idx = idx
+        folder = self.manager.folders[idx]
+        
+        # Update dropdown
+        self._folder_var.set(folder.name)
+        
+        # Load hidden state
+        self._hidden_var.set(folder.hidden)
+        
+        # Load current icon
+        current_icon_path = self.manager.get_folder_icon_path(folder)
+        if current_icon_path:
+            try:
+                img = Image.open(current_icon_path).convert("RGBA")
+                img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+                self._current_icon_img = ctk.CTkImage(img, size=(200, 200))
+                self._current_icon_label.configure(image=self._current_icon_img, text="")
+            except Exception as e:
+                logger.warning(f"Failed to load current icon: {e}")
+                self._current_icon_label.configure(text="Error loading icon")
+        else:
+            self._current_icon_label.configure(image=None, text="No icon")
+            self._current_icon_img = None
+        
+        # Reset preview
+        self._new_icon_label.configure(image=None, text="Preview")
+        self._new_icon_img = None
+        self._selected_icon_path = None
+        self._icon_path_label.configure(text="No file selected")
+        
+        # Update status
+        self._status_label.configure(text=f"Folder {idx + 1} of {len(self.manager.folders)}")
+
+    def _on_folder_select(self, value: str):
+        """Handle folder selection from dropdown."""
+        for i, folder in enumerate(self.manager.folders):
+            if folder.name == value:
+                self._load_folder(i)
+                break
+
+    def _browse_icon(self):
+        """Open file browser to select an icon file."""
+        file_path = filedialog.askopenfilename(
+            title="Select Icon",
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp"), ("All files", "*.*")]
+        )
+        if file_path:
+            self._selected_icon_path = file_path
+            filename = Path(file_path).name
+            self._icon_path_label.configure(text=filename, text_color="white")
+            self._preview_icon(file_path)
+
+    def _preview_icon(self, icon_path: str):
+        """Preview the selected icon file."""
+        try:
+            img = Image.open(icon_path).convert("RGBA")
+            img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+            self._new_icon_img = ctk.CTkImage(img, size=(200, 200))
+            self._new_icon_label.configure(image=self._new_icon_img, text="")
+        except Exception as e:
+            logger.warning(f"Failed to load preview icon: {e}")
+            self._new_icon_label.configure(text="Error loading")
+            self._selected_icon_path = None
+
+    def _apply_current(self):
+        """Apply selected icon and hidden state to current folder."""
+        if not self._selected_icon_path:
+            messagebox.showwarning("No selection", "Please select an icon file first.")
+            return
+        
+        folder = self.manager.folders[self._current_folder_idx]
+        icon_path = self._selected_icon_path
+        
+        try:
+            # Store the relative or absolute path
+            folder.set("image", icon_path)
+            # Apply hidden state
+            folder.hidden = self._hidden_var.get()
+            logger.info(f"Applied icon '{Path(icon_path).name}' to folder '{folder.name}' (hidden={folder.hidden})")
+            messagebox.showinfo("Success", f"Icon applied to '{folder.name}'")
+            self._next_folder()
+        except Exception as e:
+            logger.error(f"Failed to apply icon: {e}")
+            messagebox.showerror("Error", f"Failed to apply icon: {e}")
+
+    def _prev_folder(self):
+        """Load previous folder."""
+        self._load_folder(self._current_folder_idx - 1)
+
+    def _add_missing_folders(self):
+        """Scan and add missing folders from gamelist directory."""
+        missing = self.manager.scan_missing_folders()
+        
+        if not missing:
+            messagebox.showinfo("No missing folders", "All subdirectories are already in the gamelist.")
+            return
+        
+        msg = f"Found {len(missing)} missing folders:\n\n" + "\n".join(missing[:10])
+        if len(missing) > 10:
+            msg += f"\n... and {len(missing) - 10} more"
+        msg += "\n\nAdd them to the gamelist?"
+        
+        result = messagebox.askyesno("Add Missing Folders", msg)
+        if result:
+            added = self.manager.add_missing_folders()
+            logger.info(f"Added {added} missing folders to gamelist")
+            messagebox.showinfo("Success", f"Added {added} missing folders to the gamelist.")
+            
+            # Reload dialog to show new folders
+            self.parent._gamelist.apply_all_changes()
+            self.destroy()
+            FolderIconManagerDialog(self.parent)
+
+    def _next_folder(self):
+        """Load next folder."""
+        self._load_folder(self._current_folder_idx + 1)
+
+    def _done(self):
+        """Save all changes and close."""
+        self.parent._gamelist.apply_all_changes()
+        self.parent._apply_filter()
+        self.parent._status("Folder icons updated")
+        logger.info("Folder icon manager closed and changes applied")
+        self.destroy()
+
+
 # ── Game Edit Dialog ──────────────────────────────────────────────────────────
 
 class GameEditDialog(ctk.CTkToplevel):
@@ -882,6 +1130,8 @@ class App(ctk.CTk):
         om.add_command(label="Detect and Hide Duplicates", command=self._detect_duplicates)
         om.add_command(label="Detect and Hide Bad Versions", command=self._detect_bad_versions)
         om.add_command(label="Review Hidden & Favorites", command=self._review_hidden_favorites)
+        om.add_separator()
+        om.add_command(label="Manage Folder Icons…", command=self._manage_folder_icons)
 
         self.bind("<Control-o>", lambda e: self._open_file())
         self.bind("<Control-s>", lambda e: self._save())
@@ -1293,6 +1543,13 @@ class App(ctk.CTk):
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
         dlg = ReviewHiddenFavoritesDialog(self)
+        self.wait_window(dlg)
+
+    def _manage_folder_icons(self):
+        if not self._gamelist:
+            messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
+            return
+        dlg = FolderIconManagerDialog(self)
         self.wait_window(dlg)
 
     # ── ROM Scanner ───────────────────────────────────────────────────────────

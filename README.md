@@ -157,6 +157,16 @@ amiga · amstradcpc · arcade · atari2600 · atari5200 · atari7800 · atarilyn
 
 ---
 
+## Credits
+
+### Icons
+
+This application uses icons provided by **[icons8](https://icons8.com/)** under their license. Icons8 provides a comprehensive set of beautiful, consistent icons used throughout the Gamelistify interface.
+
+If you use this application, please consider supporting icons8 by visiting their website.
+
+---
+
 ## Contributing
 
 Pull requests are welcome. For significant changes, open an issue first to discuss what you'd like to change.
