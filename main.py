@@ -116,6 +116,55 @@ class SettingsDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+# ── Batch Favorite Dialog ─────────────────────────────────────────────────────
+
+class BatchFavoriteDialog(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Batch Favorite by Names")
+        self.geometry("500x400")
+        self.resizable(False, False)
+        self.grab_set()
+        self._build()
+
+    def _build(self):
+        ctk.CTkLabel(self, text="Paste list of game names (one per line):", font=("", 12, "bold")).pack(anchor="w", padx=14, pady=(14, 6))
+        self._text_box = ctk.CTkTextbox(self, height=250, wrap="word")
+        self._text_box.pack(fill="both", expand=True, padx=14, pady=6)
+
+        btnrow = ctk.CTkFrame(self, fg_color="transparent")
+        btnrow.pack(side="bottom", pady=14, padx=14, fill="x")
+        ctk.CTkButton(btnrow, text="Apply", command=self._apply, fg_color=COL_HIGHLIGHT).pack(side="right", padx=4)
+        ctk.CTkButton(btnrow, text="Cancel", command=self.destroy, fg_color=COL_ACCENT).pack(side="right", padx=4)
+
+    def _apply(self):
+        text = self._text_box.get("1.0", "end").strip()
+        if not text:
+            messagebox.showinfo("No names", "Please enter at least one name.")
+            return
+        names = [line.strip() for line in text.splitlines() if line.strip()]
+        if not names:
+            messagebox.showinfo("No names", "Please enter at least one name.")
+            return
+
+        if not self.parent._gamelist:
+            messagebox.showerror("No gamelist", "No gamelist loaded.")
+            return
+
+        favored = 0
+        for name in names:
+            name_lower = name.lower()
+            for g in self.parent._gamelist.games:
+                if name_lower in g.name.lower() or g.name.lower() in name_lower:
+                    g.favorite = True
+                    favored += 1
+
+        self.parent._apply_filter()
+        self.parent._status(f"Favored {favored} games matching the names")
+        self.destroy()
+
+
 # ── Game Edit Dialog ──────────────────────────────────────────────────────────
 
 class GameEditDialog(ctk.CTkToplevel):
@@ -495,6 +544,8 @@ class App(ctk.CTk):
         om = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Tools", menu=om)
         om.add_command(label="Settings…", command=self._open_settings)
+        om.add_command(label="Set Name from Filename", command=self._set_name_from_filename)
+        om.add_command(label="Batch Favorite by Names", command=self._batch_favorite)
 
         self.bind("<Control-o>", lambda e: self._open_file())
         self.bind("<Control-s>", lambda e: self._save())
@@ -811,6 +862,26 @@ class App(ctk.CTk):
         dlg = GameEditDialog(self, g, self._gamelist)
         self.wait_window(dlg)
         self._apply_filter()
+
+    def _set_name_from_filename(self):
+        sel = self._selected_game_objects()
+        if not sel:
+            return
+        for g in sel:
+            path = g.path
+            if path:
+                filename = os.path.basename(path)
+                name_without_ext = os.path.splitext(filename)[0]
+                g.set("name", name_without_ext)
+        self._apply_filter()
+        self._status(f"Set name from filename for {len(sel)} games")
+
+    def _batch_favorite(self):
+        if not self._gamelist:
+            messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
+            return
+        dlg = BatchFavoriteDialog(self)
+        self.wait_window(dlg)
 
     # ── ROM Scanner ───────────────────────────────────────────────────────────
 
