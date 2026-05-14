@@ -123,45 +123,61 @@ class BatchFavoriteDialog(ctk.CTkToplevel):
         super().__init__(parent)
         self.parent = parent
         self.title("Batch Favorite by Names")
-        self.geometry("500x400")
+        self.geometry("700x500")
         self.resizable(False, False)
         self.grab_set()
+        self._matches = []
         self._build()
 
     def _build(self):
-        ctk.CTkLabel(self, text="Paste list of game names (one per line):", font=("", 12, "bold")).pack(anchor="w", padx=14, pady=(14, 6))
-        self._text_box = ctk.CTkTextbox(self, height=250, wrap="word")
-        self._text_box.pack(fill="both", expand=True, padx=14, pady=6)
+        # Top: input
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=14, pady=(14, 6))
+        ctk.CTkLabel(top, text="Paste list of game names (one per line):", font=("", 12, "bold")).pack(anchor="w")
+        self._text_box = ctk.CTkTextbox(top, height=100, wrap="word")
+        self._text_box.pack(fill="x", pady=(6, 0))
+        self._text_box.bind('<KeyRelease>', self._update_matches)
+
+        # Bottom: matches
+        bottom = ctk.CTkFrame(self)
+        bottom.pack(fill="both", expand=True, padx=14, pady=6)
+        ctk.CTkLabel(bottom, text="Matching games:", font=("", 12, "bold")).pack(anchor="w", pady=(0, 6))
+        self._tree = ttk.Treeview(bottom, columns=("name",), show="headings", height=10)
+        self._tree.heading("name", text="Game Name")
+        self._tree.column("name", width=600)
+        sb = ttk.Scrollbar(bottom, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscrollcommand=sb.set)
+        self._tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
 
         btnrow = ctk.CTkFrame(self, fg_color="transparent")
         btnrow.pack(side="bottom", pady=14, padx=14, fill="x")
         ctk.CTkButton(btnrow, text="Apply", command=self._apply, fg_color=COL_HIGHLIGHT).pack(side="right", padx=4)
         ctk.CTkButton(btnrow, text="Cancel", command=self.destroy, fg_color=COL_ACCENT).pack(side="right", padx=4)
 
-    def _apply(self):
+    def _update_matches(self, event=None):
+        self._tree.delete(*self._tree.get_children())
+        self._matches.clear()
         text = self._text_box.get("1.0", "end").strip()
-        if not text:
-            messagebox.showinfo("No names", "Please enter at least one name.")
+        if not text or not self.parent._gamelist:
             return
-        names = [line.strip() for line in text.splitlines() if line.strip()]
-        if not names:
-            messagebox.showinfo("No names", "Please enter at least one name.")
-            return
-
-        if not self.parent._gamelist:
-            messagebox.showerror("No gamelist", "No gamelist loaded.")
-            return
-
-        favored = 0
+        names = [line.strip().lower() for line in text.splitlines() if line.strip()]
+        seen = set()
         for name in names:
-            name_lower = name.lower()
             for g in self.parent._gamelist.games:
-                if name_lower in g.name.lower() or g.name.lower() in name_lower:
-                    g.favorite = True
-                    favored += 1
+                if id(g) not in seen and (name in g.name.lower() or g.name.lower() in name):
+                    self._tree.insert("", "end", values=(g.name,))
+                    self._matches.append(g)
+                    seen.add(id(g))
 
+    def _apply(self):
+        if not self._matches:
+            messagebox.showinfo("No matches", "No matching games found.")
+            return
+        for g in self._matches:
+            g.favorite = True
         self.parent._apply_filter()
-        self.parent._status(f"Favored {favored} games matching the names")
+        self.parent._status(f"Favored {len(self._matches)} games")
         self.destroy()
 
 
