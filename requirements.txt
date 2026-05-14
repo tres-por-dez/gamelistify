@@ -2,3 +2,6 @@ customtkinter>=5.2.0
 lxml>=5.0.0
 Pillow>=10.0.0
 PySide6>=6.7.0
+colorama>=0.4.4
+requests>=2.31.0
+logging>=0.4.9.6

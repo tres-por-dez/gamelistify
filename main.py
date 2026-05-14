@@ -9,7 +9,10 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import customtkinter as ctk
-from PIL import Image, ImageTk
+from PIL import Image
+from PIL import ImageTk
+import logging
+import colorama
 
 from settings import settings
 from gamelist_parser import GameList, Game
@@ -19,6 +22,31 @@ from scraper_bridge import (
     ScraperJob, build_skyscraper_bulk_command,
     build_skyscraper_command, write_skyscraper_credentials, find_skyscraper_bin,
 )
+
+# ── Logging Setup ─────────────────────────────────────────────────────────────
+colorama.init()
+
+class ColoredFormatter(logging.Formatter):
+    COLORS = {
+        'DEBUG': '\033[94m',     # Blue
+        'INFO': '\033[92m',      # Green
+        'WARNING': '\033[93m',   # Yellow
+        'ERROR': '\033[91m',     # Red
+        'CRITICAL': '\033[95m'   # Magenta
+    }
+    RESET = '\033[0m'
+
+    def format(self, record):
+        color = self.COLORS.get(record.levelname, self.RESET)
+        record.levelname = f"{color}{record.levelname}{self.RESET}"
+        return super().format(record)
+
+formatter = ColoredFormatter('%(asctime)s - %(levelname)s - %(message)s')
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logging.getLogger().addHandler(handler)
+logging.getLogger().setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -172,12 +200,14 @@ class BatchFavoriteDialog(ctk.CTkToplevel):
 
     def _apply(self):
         if not self._matches:
+            logger.warning("No matching games found for batch favorite")
             messagebox.showinfo("No matches", "No matching games found.")
             return
         for g in self._matches:
             g.favorite = True
         self.parent._apply_filter()
         self.parent._status(f"Favored {len(self._matches)} games")
+        logger.info(f"Batch favored {len(self._matches)} games")
         self.destroy()
 
 
@@ -193,14 +223,16 @@ def get_base_name(name: str) -> str:
 
 def get_priority(name: str) -> int:
     name_lower = name.lower()
-    if 'usa' in name_lower or 'ntsc-u' in name_lower:
+    if 'usa' in name_lower or 'ntsc-u' in name_lower or 'us' in name_lower:
         return 1
-    elif 'japan' in name_lower or 'ntsc-j' in name_lower:
+    elif 'japan' in name_lower or 'ntsc-j' in name_lower or 'jp' in name_lower:
         return 2
-    elif 'europe' in name_lower or 'pal' in name_lower:
+    elif 'brazil' in name_lower or 'br' in name_lower:
         return 3
-    else:
+    elif 'europe' in name_lower or 'pal' in name_lower or 'eur' in name_lower:
         return 4
+    else:
+        return 5
 
 class DetectDuplicatesDialog(ctk.CTkToplevel):
     def __init__(self, parent):
@@ -261,6 +293,9 @@ class DetectDuplicatesDialog(ctk.CTkToplevel):
                 games.sort(key=lambda g: get_priority(g.name))
                 self._visible_games.append(games[0])
                 self._hidden_games.extend(games[1:])
+                # If any hidden game is favorite, mark the visible one as favorite
+                if any(g.favorite for g in games[1:]):
+                    games[0].favorite = True
 
         # Populate trees
         for g in self._visible_games:
@@ -273,6 +308,7 @@ class DetectDuplicatesDialog(ctk.CTkToplevel):
             g.hidden = True
         self.parent._apply_filter()
         self.parent._status(f"Hidden {len(self._hidden_games)} duplicate games")
+        logger.info(f"Hidden {len(self._hidden_games)} duplicate games")
         self.destroy()
 
 
@@ -349,13 +385,20 @@ class DetectBadVersionsDialog(ctk.CTkToplevel):
                     good_games.sort(key=lambda g: get_revision(g.name), reverse=True)
                     self._visible_games.append(good_games[0])
                     self._hidden_games.extend(good_games[1:])
+                    # Transfer favorite if any hidden was favorite
+                    if any(g.favorite for g in good_games[1:] + bad_games):
+                        good_games[0].favorite = True
                 elif good_games:
                     self._visible_games.append(good_games[0])
+                    # Transfer favorite if any bad was favorite
+                    if any(g.favorite for g in bad_games):
+                        good_games[0].favorite = True
                 # If no good games, maybe keep all? But since bad, perhaps hide all except one
                 elif bad_games:
                     bad_games.sort(key=lambda g: get_revision(g.name), reverse=True)
                     self._visible_games.append(bad_games[0])
                     self._hidden_games.extend(bad_games[1:])
+                    # No transfer needed since all are bad
 
         # Populate trees
         for g in self._visible_games:
@@ -368,6 +411,62 @@ class DetectBadVersionsDialog(ctk.CTkToplevel):
             g.hidden = True
         self.parent._apply_filter()
         self.parent._status(f"Hidden {len(self._hidden_games)} bad/alternate version games")
+        logger.info(f"Hidden {len(self._hidden_games)} bad/alternate version games")
+        self.destroy()
+
+
+class ReviewHiddenFavoritesDialog(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Review Hidden & Favorites")
+        self.geometry("400x200")
+        self.resizable(False, False)
+        self.grab_set()
+        self._build()
+        self._review()
+
+    def _build(self):
+        ctk.CTkLabel(self, text="Reviewing hidden games and favorites...", font=("", 12)).pack(pady=20)
+        self._status_label = ctk.CTkLabel(self, text="", font=("", 10))
+        self._status_label.pack(pady=10)
+        btnrow = ctk.CTkFrame(self, fg_color="transparent")
+        btnrow.pack(side="bottom", pady=14, padx=14, fill="x")
+        ctk.CTkButton(btnrow, text="Apply", command=self._apply, fg_color=COL_HIGHLIGHT).pack(side="right", padx=4)
+        ctk.CTkButton(btnrow, text="Cancel", command=self.destroy, fg_color=COL_ACCENT).pack(side="right", padx=4)
+
+    def _review(self):
+        if not self.parent._gamelist:
+            return
+        groups = {}
+        for g in self.parent._gamelist.games:
+            base = get_base_name(g.name)
+            if base not in groups:
+                groups[base] = []
+            groups[base].append(g)
+
+        made_visible = 0
+        for base, games in groups.items():
+            # Check if all are hidden
+            if all(g.hidden for g in games):
+                # Make the highest priority visible
+                games.sort(key=lambda g: get_priority(g.name))
+                games[0].hidden = False
+                made_visible += 1
+            # Check favorites
+            favorites = [g for g in games if g.favorite]
+            if favorites and all(g.hidden for g in favorites):
+                # Make the highest priority favorite visible
+                favorites.sort(key=lambda g: get_priority(g.name))
+                favorites[0].hidden = False
+                made_visible += 1
+
+        self._status_label.configure(text=f"Found {made_visible} games to make visible.")
+
+    def _apply(self):
+        self.parent._apply_filter()
+        self.parent._status("Review applied")
+        logger.info("Review hidden & favorites applied")
         self.destroy()
 
 
@@ -703,6 +802,33 @@ class App(ctk.CTk):
         self._preview_img = None
         self._sort_col = "name"
         self._sort_rev = False
+
+        # Load icons
+        try:
+            self.icon_open = ctk.CTkImage(Image.open("icons/icons8-opened-folder-32.png"), size=(24,24))
+            self.icon_save = ctk.CTkImage(Image.open("icons/icons8-save-32.png"), size=(24,24))
+            self.icon_reload = ctk.CTkImage(Image.open("icons/icons8-restart-32.png"), size=(24,24))
+            self.icon_hide = ctk.CTkImage(Image.open("icons/icons8-switch-off-32.png"), size=(24,24))
+            self.icon_unhide = ctk.CTkImage(Image.open("icons/icons8-eye-32.png"), size=(24,24))
+            self.icon_favorite = ctk.CTkImage(Image.open("icons/icons8-star-32.png"), size=(24,24))
+            self.icon_delete = ctk.CTkImage(Image.open("icons/icons8-trash-32.png"), size=(24,24))
+            self.icon_scan = ctk.CTkImage(Image.open("icons/icons8-search-32.png"), size=(24,24))
+            self.icon_scrape = ctk.CTkImage(Image.open("icons/icons8-command-line-32.png"), size=(24,24))
+            # App icon
+            self.iconphoto(False, ImageTk.PhotoImage(Image.open("icons/app_icon.png")))
+            logger.info("Icons loaded successfully")
+        except Exception as e:
+            logger.warning(f"Failed to load some icons: {e}")
+            self.icon_open = None
+            self.icon_save = None
+            self.icon_reload = None
+            self.icon_hide = None
+            self.icon_unhide = None
+            self.icon_favorite = None
+            self.icon_delete = None
+            self.icon_scan = None
+            self.icon_scrape = None
+
         self._build_menu()
         self._build_ui()
 
@@ -755,6 +881,7 @@ class App(ctk.CTk):
         om.add_command(label="Batch Favorite by Names", command=self._batch_favorite)
         om.add_command(label="Detect and Hide Duplicates", command=self._detect_duplicates)
         om.add_command(label="Detect and Hide Bad Versions", command=self._detect_bad_versions)
+        om.add_command(label="Review Hidden & Favorites", command=self._review_hidden_favorites)
 
         self.bind("<Control-o>", lambda e: self._open_file())
         self.bind("<Control-s>", lambda e: self._save())
@@ -784,22 +911,22 @@ class App(ctk.CTk):
         toolbar.grid(row=0, column=0, sticky="ew", columnspan=2)
         toolbar.grid_propagate(False)
 
-        ctk.CTkButton(toolbar, text="⊕ Open", width=80, command=self._open_file).pack(side="left", padx=4, pady=6)
-        ctk.CTkButton(toolbar, text="💾 Save", width=80, fg_color=COL_ACCENT, command=self._save).pack(side="left", padx=2, pady=6)
-        ctk.CTkButton(toolbar, text="🔄 Reload", width=80, fg_color=COL_ACCENT, command=self._reload).pack(side="left", padx=2, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_open, text="Open", width=80, command=self._open_file, compound="left").pack(side="left", padx=4, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_save, text="Save", width=80, fg_color=COL_ACCENT, command=self._save, compound="left").pack(side="left", padx=2, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_reload, text="Reload", width=80, fg_color=COL_ACCENT, command=self._reload, compound="left").pack(side="left", padx=2, pady=6)
 
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8, pady=4)
 
-        ctk.CTkButton(toolbar, text="👁 Hide", width=70, command=lambda: self._bulk_set_flag("hidden", True)).pack(side="left", padx=2, pady=6)
-        ctk.CTkButton(toolbar, text="👁 Unhide", width=80, command=lambda: self._bulk_set_flag("hidden", False)).pack(side="left", padx=2, pady=6)
-        ctk.CTkButton(toolbar, text="⭐ Fav", width=70, command=lambda: self._bulk_set_flag("favorite", True)).pack(side="left", padx=2, pady=6)
-        ctk.CTkButton(toolbar, text="🗑 Delete", width=80, fg_color="#6b1a1a", command=self._delete_selected).pack(side="left", padx=2, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_hide, text="Hide", width=70, command=lambda: self._bulk_set_flag("hidden", True), compound="left").pack(side="left", padx=2, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_unhide, text="Unhide", width=80, command=lambda: self._bulk_set_flag("hidden", False), compound="left").pack(side="left", padx=2, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_favorite, text="Fav", width=70, command=lambda: self._bulk_set_flag("favorite", True), compound="left").pack(side="left", padx=2, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_delete, text="Delete", width=80, fg_color="#6b1a1a", command=self._delete_selected, compound="left").pack(side="left", padx=2, pady=6)
 
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8, pady=4)
 
-        ctk.CTkButton(toolbar, text="🎮 Scan ROMs", width=100, command=self._scan_roms).pack(side="left", padx=2, pady=6)
-        ctk.CTkButton(toolbar, text="🕹 Scrape Sel.", width=100, command=self._scrape_selected).pack(side="left", padx=2, pady=6)
-        ctk.CTkButton(toolbar, text="🕹 Scrape All", width=100, command=self._scrape_bulk).pack(side="left", padx=2, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_scan, text="Scan ROMs", width=100, command=self._scan_roms, compound="left").pack(side="left", padx=2, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_scrape, text="Scrape Sel.", width=100, command=self._scrape_selected, compound="left").pack(side="left", padx=2, pady=6)
+        ctk.CTkButton(toolbar, image=self.icon_scrape, text="Scrape All", width=100, command=self._scrape_bulk, compound="left").pack(side="left", padx=2, pady=6)
 
         # Search / filter
         ctk.CTkLabel(toolbar, text="Filter:").pack(side="right", padx=(4, 2))
@@ -854,6 +981,10 @@ class App(ctk.CTk):
         self._tree.bind("<Double-1>", self._on_double_click)
         self._tree.bind("<Return>", self._on_double_click)
         self._tree.bind("<Delete>", lambda e: self._delete_selected())
+        self._tree.bind("<Control-Prior>", self._page_up)
+        self._tree.bind("<Control-Next>", self._page_down)
+        self._tree.bind("<Control-End>", self._select_last)
+        self._tree.bind("<Control-Home>", self._select_first)
 
         # Right panel — preview + quick edit
         right = ctk.CTkFrame(main, fg_color=COL_PANEL, corner_radius=0, width=260)
@@ -899,7 +1030,9 @@ class App(ctk.CTk):
             self._update_recent_menu()
             self._apply_filter()
             self._status(f"Loaded {len(gl)} entries from {path}")
+            logger.info(f"Loaded gamelist with {len(gl)} entries from {path}")
         except Exception as e:
+            logger.error(f"Failed to load gamelist from {path}: {str(e)}")
             messagebox.showerror("Load Error", str(e))
 
     def _reload(self):
@@ -912,7 +1045,9 @@ class App(ctk.CTk):
         try:
             self._gamelist.save(backup=True)
             self._status(f"Saved — backup written to {self._gamelist.xml_path}.bak")
+            logger.info(f"Saved gamelist to {self._gamelist.xml_path} with backup")
         except Exception as e:
+            logger.error(f"Failed to save gamelist: {str(e)}")
             messagebox.showerror("Save Error", str(e))
 
     def _save_as(self):
@@ -946,7 +1081,11 @@ class App(ctk.CTk):
         rev = self._sort_rev
         col = self._sort_col
         try:
-            games = sorted(games, key=lambda g: g.get(col, "").lower(), reverse=rev)
+            if col == "favorite":
+                # Sort by favorite first (True first), then by name
+                games = sorted(games, key=lambda g: (0 if g.favorite else 1, g.name.lower()), reverse=rev)
+            else:
+                games = sorted(games, key=lambda g: g.get(col, "").lower(), reverse=rev)
         except Exception:
             pass
 
@@ -968,14 +1107,14 @@ class App(ctk.CTk):
                 "", "end",
                 iid=id(g),
                 values=(
-                    ("👁 " if g.hidden else "") + g.name,
+                    ("[H] " if g.hidden else "") + g.name,
                     g.get("genre"),
                     g.get("developer"),
                     g.get("releasedate", "")[:10],
                     format_rating(g.get("rating")),
                     g.get("players"),
                     "✓" if g.hidden else "",
-                    "⭐" if g.favorite else "",
+                    "★" if g.favorite else "",
                 ),
                 tags=(tag,),
             )
@@ -1004,6 +1143,34 @@ class App(ctk.CTk):
         sel = set(self._tree.selection())
         self._tree.selection_set(list(all_iids - sel))
 
+    def _page_up(self, event=None):
+        self._tree.yview_scroll(-1, "pages")
+        visible = self._tree.identify_row(0)  # First visible row
+        if visible:
+            self._tree.selection_set(visible)
+            self._tree.focus(visible)
+
+    def _page_down(self, event=None):
+        self._tree.yview_scroll(1, "pages")
+        visible = self._tree.identify_row(self._tree.winfo_height() - 10)  # Approximate last visible
+        if visible:
+            self._tree.selection_set(visible)
+            self._tree.focus(visible)
+
+    def _select_first(self, event=None):
+        children = self._tree.get_children()
+        if children:
+            self._tree.selection_set(children[0])
+            self._tree.focus(children[0])
+            self._tree.see(children[0])
+
+    def _select_last(self, event=None):
+        children = self._tree.get_children()
+        if children:
+            self._tree.selection_set(children[-1])
+            self._tree.focus(children[-1])
+            self._tree.see(children[-1])
+
     # ── Event handlers ────────────────────────────────────────────────────────
 
     def _on_select(self, event=None):
@@ -1014,15 +1181,14 @@ class App(ctk.CTk):
         # Update preview
         img_raw = g.get("image")
         abs_img = self._gamelist.resolve_media_path(img_raw) if self._gamelist else None
-        self._preview_label.configure(image=None)  # Clear previous image
+        self._preview_img = None
+        self._preview_label.configure(text="")
         if abs_img:
             self._preview_img = load_thumbnail(abs_img, 240, 240)
             if self._preview_img:
-                self._preview_label.configure(image=self._preview_img, text="")
+                self._preview_label.configure(image=self._preview_img)
             else:
-                self._preview_label.configure(text="No image")
-        else:
-            self._preview_label.configure(text="No image")
+                self._preview_label.configure(image=None)
         # Info box
         info = (
             f"Name:   {g.name}\n"
@@ -1087,6 +1253,7 @@ class App(ctk.CTk):
     def _set_name_from_filename(self):
         sel = self._selected_game_objects()
         if not sel:
+            logger.warning("No games selected for setting name from filename")
             return
         for g in sel:
             path = g.path
@@ -1096,13 +1263,16 @@ class App(ctk.CTk):
                 g.set("name", name_without_ext)
         self._apply_filter()
         self._status(f"Set name from filename for {len(sel)} games")
+        logger.info(f"Set name from filename for {len(sel)} games")
 
     def _batch_favorite(self):
         if not self._gamelist:
+            logger.warning("No gamelist loaded for batch favorite")
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
         dlg = BatchFavoriteDialog(self)
         self.wait_window(dlg)
+        logger.info("Batch favorite dialog opened")
 
     def _detect_duplicates(self):
         if not self._gamelist:
@@ -1116,6 +1286,13 @@ class App(ctk.CTk):
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
         dlg = DetectBadVersionsDialog(self)
+        self.wait_window(dlg)
+
+    def _review_hidden_favorites(self):
+        if not self._gamelist:
+            messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
+            return
+        dlg = ReviewHiddenFavoritesDialog(self)
         self.wait_window(dlg)
 
     # ── ROM Scanner ───────────────────────────────────────────────────────────
