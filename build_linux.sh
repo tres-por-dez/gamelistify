@@ -1,40 +1,40 @@
 #!/bin/bash
 
-# Lê a versão do arquivo VERSION
 if [ -f VERSION ]; then
-    APP_VERSION=$(cat VERSION | tr -d '\r\n')
+    APP_VERSION=$(cat VERSION)
 else
-    APP_VERSION="0.0.9"
+    APP_VERSION="000"
 fi
 
 APP_NAME="gamelistify_v${APP_VERSION}"
 ICON_PATH="icons/app_icon.ico"
 
-echo "Iniciando build para Linux (v${APP_VERSION})..."
+uv add pyinstaller --dev
+# Localiza o caminho das shared objects do Tcl/Tk no ambiente do uv
+PYTHON_BIN=$(uv run which python)
+PYTHON_HOME=$(uv run python -c "import sys; from pathlib import Path; print(Path(sys.executable).parent.parent)")
+LIB_PATH="${PYTHON_HOME}/lib"
 
-# Garante que as dependências estejam instaladas (opcional)
-# pip install pyinstaller
+# Exporta LD_LIBRARY_PATH para o PyInstaller localizar as libs durante a análise
+export LD_LIBRARY_PATH="$LIB_PATH:$LD_LIBRARY_PATH"
 
-uv add --dev pyinstaller
-
-echo uv run pyinstaller --onefile --windowed \
-    --icon="${ICON_PATH}" \
-    --add-data "icons:icons" \
+uv run pyinstaller --onefile --windowed \
     --name="${APP_NAME}" \
+    --add-data "icons:icons" \
+    --collect-all tkinter \
+    --collect-all _tkinter \
+    --hidden-import=tkinter \
+    --add-binary "${LIB_PATH}/libtcl9.0.so:." \
+    --add-binary "${LIB_PATH}/libtk9.0.so:." \
     main.py
-# pyinstaller --onefile --windowed \
-#     --icon="${ICON_PATH}" \
-#     --add-data "icons:icons" \
-#     --name="${APP_NAME}" \
-#     main.py
 
 if [ $? -eq 0 ]; then
     echo "-------------------------------------------"
-    echo "Build concluído com sucesso!"
-    echo "Executável disponível em: dist/${APP_NAME}"
+    echo "Build success!"
+    echo "dist/${APP_NAME}"
     echo "-------------------------------------------"
 else
-    echo "Erro durante o processo de build."
+    echo "Error occurred.."
     exit 1
 fi
 
