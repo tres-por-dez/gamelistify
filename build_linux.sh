@@ -10,12 +10,11 @@ APP_NAME="gamelistify_v${APP_VERSION}"
 ICON_PATH="icons/app_icon.ico"
 
 uv add pyinstaller --dev
-# Localiza o caminho das shared objects do Tcl/Tk no ambiente do uv
+
 PYTHON_BIN=$(uv run which python)
 PYTHON_HOME=$(uv run python -c "import sys; from pathlib import Path; print(Path(sys.executable).parent.parent)")
 LIB_PATH="${PYTHON_HOME}/lib"
 
-# Exporta LD_LIBRARY_PATH para o PyInstaller localizar as libs durante a análise
 export LD_LIBRARY_PATH="$LIB_PATH:$LD_LIBRARY_PATH"
 
 uv run pyinstaller --onefile --windowed \
