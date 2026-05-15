@@ -3,7 +3,10 @@ settings.py — persistent settings backed by JSON
 """
 import json
 import os
+import logging
 from config import SETTINGS_FILE
+
+logger = logging.getLogger(__name__)
 
 
 _defaults = {
@@ -35,6 +38,7 @@ class Settings:
         self.load()
 
     def load(self):
+        logger.info(f"Loading settings from {SETTINGS_FILE}")
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -45,24 +49,30 @@ class Settings:
                         self._data[k].update(v)
                     else:
                         self._data[k] = v
-            except Exception:
-                pass
+                logger.info("Settings loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load settings: {e}")
+        else:
+            logger.info("Settings file does not exist, using defaults")
 
     def save(self):
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
+            logger.info("Settings saved successfully")
         except Exception as e:
-            print(f"[Settings] Failed to save: {e}")
+            logger.error(f"Failed to save settings: {e}")
 
     def get(self, key, fallback=None):
         return self._data.get(key, fallback)
 
     def set(self, key, value):
+        logger.info(f"Setting {key} = {value}")
         self._data[key] = value
         self.save()
 
     def add_recent(self, path: str):
+        logger.info(f"Adding recent file: {path}")
         recents = self._data.get("recent_files", [])
         if path in recents:
             recents.remove(path)

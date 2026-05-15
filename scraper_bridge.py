@@ -6,8 +6,11 @@ We write the credentials there before invoking it.
 import os
 import subprocess
 import shutil
+import logging
 import configparser
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from settings import settings
 from config import SKYSCRAPER_CANDIDATES
 
@@ -27,6 +30,7 @@ def find_skyscraper_bin() -> str | None:
 
 def write_skyscraper_credentials(user: str, password: str):
     """Inject credentials into ~/.skyscraper/config.ini."""
+    logger.info("Writing Skyscraper credentials to config")
     cfg_dir = Path.home() / ".skyscraper"
     cfg_dir.mkdir(exist_ok=True)
     cfg_file = cfg_dir / "config.ini"
@@ -41,6 +45,7 @@ def write_skyscraper_credentials(user: str, password: str):
 
     with open(str(cfg_file), "w") as f:
         config.write(f)
+    logger.info("Skyscraper credentials written successfully")
 
 
 def build_skyscraper_command(
@@ -50,8 +55,10 @@ def build_skyscraper_command(
     media_dir: str | None = None,
     extra_args: list[str] | None = None,
 ) -> list[str]:
+    logger.info(f"Building Skyscraper command for platform {platform}, ROM {rom_path}")
     binary = find_skyscraper_bin()
     if not binary:
+        logger.error("Skyscraper binary not found")
         raise FileNotFoundError("Skyscraper binary not found. Set path in Settings.")
 
     cmd = [
@@ -67,6 +74,7 @@ def build_skyscraper_command(
 
     # Single ROM mode: pass the specific file
     cmd.append(rom_path)
+    logger.info(f"Built command: {' '.join(cmd)}")
     return cmd
 
 
@@ -130,6 +138,7 @@ class ScraperJob:
         self.done_cb = done_cb or (lambda rc: None)
         self._proc: subprocess.Popen | None = None
         self._cancelled = False
+        logger.info(f"Created ScraperJob with command: {' '.join(cmd)}")
 
     def run(self):
         import threading
@@ -138,6 +147,7 @@ class ScraperJob:
         return t
 
     def _run_inner(self):
+        logger.info(f"Starting ScraperJob execution")
         try:
             self._proc = subprocess.Popen(
                 self.cmd,
@@ -148,12 +158,15 @@ class ScraperJob:
             )
             for line in self._proc.stdout:
                 if self._cancelled:
+                    logger.info("ScraperJob cancelled")
                     self._proc.terminate()
                     break
                 self.progress_cb(line.rstrip())
             self._proc.wait()
+            logger.info(f"ScraperJob finished with return code {self._proc.returncode}")
             self.done_cb(self._proc.returncode)
         except Exception as e:
+            logger.error(f"ScraperJob failed: {e}")
             self.progress_cb(f"[ERROR] {e}")
             self.done_cb(-1)
 

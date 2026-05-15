@@ -1,0 +1,8 @@
+- Better error handling
+- Better backup management
+- Test scrapper tools
+- Live preview within an "simulated" emulationstation
+- Better user experience in the flow
+- Accomodate better the tools
+- Change title to show the current loaded file
+- 

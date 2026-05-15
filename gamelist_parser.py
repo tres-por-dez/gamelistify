@@ -5,9 +5,12 @@ save() which keeps a .bak backup.
 """
 import os
 import shutil
+import logging
 from copy import deepcopy
 from lxml import etree
 from config import GAME_FIELDS, BOOL_FIELDS
+
+logger = logging.getLogger(__name__)
 
 
 class Game:
@@ -95,19 +98,28 @@ class GameList:
         self.games: list[Game] = []
         self._path_index: dict[str, Game] = {}
         self._loaded = False
+        logger.info(f"Initialized GameList for {xml_path}")
 
     def load(self):
+        logger.info(f"Loading gamelist from {self.xml_path}")
         parser = etree.XMLParser(remove_blank_text=False, recover=True)
         self._tree = etree.parse(self.xml_path, parser)
         self._root = self._tree.getroot()
         self.games = []
         self._path_index = {}
+        game_count = 0
+        folder_count = 0
         for el in self._root:
             if el.tag in ("game", "folder"):
                 g = Game(el)
                 self.games.append(g)
                 self._path_index[g.path] = g
+                if el.tag == "game":
+                    game_count += 1
+                else:
+                    folder_count += 1
         self._loaded = True
+        logger.info(f"Loaded {game_count} games and {folder_count} folders from {self.xml_path}")
 
     def reload(self):
         self.load()
@@ -123,6 +135,7 @@ class GameList:
                 g.set(k, v)
         self.games.append(g)
         self._path_index[g.path] = g
+        logger.info(f"Added new game: {g.name} ({g.path})")
         return g
 
     def add_folder(self, fields: dict) -> Game:
@@ -133,6 +146,7 @@ class GameList:
                 g.set(k, v)
         self.games.append(g)
         self._path_index[g.path] = g
+        logger.info(f"Added new folder: {g.name} ({g.path})")
         return g
 
     def remove_game(self, game: Game):
@@ -153,6 +167,7 @@ class GameList:
     def save(self, backup=True):
         if backup and os.path.exists(self.xml_path):
             shutil.copy2(self.xml_path, self.xml_path + ".bak")
+        etree.indent(self._root, space="  ")
         self._tree.write(
             self.xml_path,
             pretty_print=True,
@@ -161,6 +176,7 @@ class GameList:
         )
 
     def save_as(self, path: str):
+        etree.indent(self._root, space="  ")
         self._tree.write(
             path,
             pretty_print=True,

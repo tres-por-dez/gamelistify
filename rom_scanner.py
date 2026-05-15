@@ -3,7 +3,10 @@ rom_scanner.py — scan a directory for ROM files and return entries
 not yet present in a GameList.
 """
 import os
+import logging
 from config import ROM_EXTENSIONS
+
+logger = logging.getLogger(__name__)
 
 
 def scan_roms(directory: str, extensions: list[str] | None = None) -> list[dict]:
@@ -11,9 +14,11 @@ def scan_roms(directory: str, extensions: list[str] | None = None) -> list[dict]
     Walk directory recursively and return a list of dicts with minimal
     game fields for ROMs found.
     """
+    logger.info(f"Scanning ROMs in directory: {directory}")
     if extensions is None:
         extensions = ROM_EXTENSIONS["default"]
     ext_set = {e.lower() for e in extensions}
+    logger.info(f"Using extensions: {extensions}")
 
     results = []
     for root, dirs, files in os.walk(directory):
@@ -35,10 +40,14 @@ def scan_roms(directory: str, extensions: list[str] | None = None) -> list[dict]
                     "name": stem,
                     "_abs": abs_path,
                 })
+    logger.info(f"Found {len(results)} ROM files")
     return results
 
 
 def diff_against_gamelist(scanned: list[dict], gamelist) -> list[dict]:
     """Return scanned entries whose path is NOT already in gamelist."""
     existing_paths = {g.path for g in gamelist.games}
-    return [r for r in scanned if r["path"] not in existing_paths]
+    logger.info(f"Comparing {len(scanned)} scanned ROMs against {len(existing_paths)} existing games")
+    new_entries = [r for r in scanned if r["path"] not in existing_paths]
+    logger.info(f"Found {len(new_entries)} new ROMs not in gamelist")
+    return new_entries
