@@ -1,0 +1,6 @@
+[project]
+name = "gamelistify"
+version = "0.0.9"
+description = "Manage your EmulationStation and RetroBat game libraries with a full-featured desktop GUI. Edit metadata, hide or delete entries in bulk, scan for unregistered ROMs, preview artwork, and scrape with Skyscraper — all without touching XML by hand."
+readme = "README.md"
+requires-python = ">=3.12"

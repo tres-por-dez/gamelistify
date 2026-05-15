@@ -15,11 +15,13 @@ echo "Iniciando build para Linux (v${APP_VERSION})..."
 # Garante que as dependências estejam instaladas (opcional)
 # pip install pyinstaller
 
-echo uv run pyinstaller --onefile --windowed \
-    --icon="${ICON_PATH}" \
+uv run --python 3.14 pyinstaller --onefile --windowed \
     --add-data "icons:icons" \
-    --name="${APP_NAME}" \
+    --name="gamelistify_v${APP_VERSION}" \
     main.py
+
+tar -czvf "dist/${APP_NAME}.tar.gz" -C dist "${APP_NAME}"
+    
 # pyinstaller --onefile --windowed \
 #     --icon="${ICON_PATH}" \
 #     --add-data "icons:icons" \
