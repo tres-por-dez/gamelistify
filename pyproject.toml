@@ -1,0 +1,12 @@
+[project]
+name = "gamelistify"
+version = "0.0.9"
+description = "Gamelistify is a desktop editor for gamelist.xml files used by EmulationStation and RetroBat. It gives you direct control over your game library metadata without manually editing XML — including bulk operations, artwork preview, ROM scanning, and full Skyscraper scraping integration."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.20.0",
+]

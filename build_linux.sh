@@ -15,6 +15,8 @@ echo "Iniciando build para Linux (v${APP_VERSION})..."
 # Garante que as dependências estejam instaladas (opcional)
 # pip install pyinstaller
 
+uv add --dev pyinstaller
+
 echo uv run pyinstaller --onefile --windowed \
     --icon="${ICON_PATH}" \
     --add-data "icons:icons" \
