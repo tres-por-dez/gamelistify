@@ -9,6 +9,8 @@ import logging
 from copy import deepcopy
 from lxml import etree
 from config import GAME_FIELDS, BOOL_FIELDS
+from datetime import datetime
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -165,15 +167,40 @@ class GameList:
     # ── save ─────────────────────────────────────────────────────────────────
 
     def save(self, backup=True):
-        if backup and os.path.exists(self.xml_path):
-            shutil.copy2(self.xml_path, self.xml_path + ".bak")
+        # Prepare new content in-memory for comparison
         etree.indent(self._root, space="  ")
-        self._tree.write(
-            self.xml_path,
-            pretty_print=True,
-            xml_declaration=True,
-            encoding="UTF-8",
-        )
+        buf = io.BytesIO()
+        self._tree.write(buf, pretty_print=True, xml_declaration=True, encoding="UTF-8")
+        new_bytes = buf.getvalue()
+
+        # If backup requested and an existing file exists, create an incremental
+        # timestamped backup only if the file content actually changed.
+        if backup and os.path.exists(self.xml_path):
+            try:
+                with open(self.xml_path, "rb") as f:
+                    old_bytes = f.read()
+            except Exception:
+                old_bytes = None
+
+            if old_bytes != new_bytes:
+                # safe ISO-like timestamp for filenames (colon is invalid on Windows)
+                ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S.%f")[:-3]
+                base = os.path.basename(self.xml_path)
+                dirn = os.path.dirname(self.xml_path)
+                if base.lower().endswith(".xml"):
+                    stem = base[:-4]
+                    bak_name = f"{stem}.{ts}.xml.bak"
+                else:
+                    bak_name = f"{base}.{ts}.bak"
+                bak_path = os.path.join(dirn, bak_name)
+                shutil.copy2(self.xml_path, bak_path)
+            else:
+                # no changes — skip creating a new backup
+                pass
+
+        # Finally write the new content to disk
+        with open(self.xml_path, "wb") as out:
+            out.write(new_bytes)
 
     def save_as(self, path: str):
         etree.indent(self._root, space="  ")

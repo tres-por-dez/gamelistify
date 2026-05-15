@@ -14,6 +14,11 @@ from PIL import Image
 from PIL import ImageTk
 import logging
 import colorama
+import threading
+import traceback
+import webbrowser
+
+from CTkToolTip import CTkToolTip
 
 from settings import settings
 from gamelist_parser import GameList, Game
@@ -23,6 +28,128 @@ from scraper_bridge import (
     ScraperJob, build_skyscraper_bulk_command,
     build_skyscraper_command, write_skyscraper_credentials, find_skyscraper_bin,
 )
+
+def show_toast(root, message, duration=2500):
+    toast = ctk.CTkToplevel(root)
+    toast.wm_overrideredirect(True)
+    toast.attributes("-topmost", True)
+    toast.attributes("-alpha", 0.97)
+
+    label = ctk.CTkLabel(
+        toast,
+        text=message,
+        fg_color="#2196F3",
+        text_color="white",
+        corner_radius=8,
+        font=ctk.CTkFont(size=13, weight="bold"),
+        padx=18,
+        pady=10,
+    )
+    label.pack()
+
+    # borda via frame externo
+    toast.configure(fg_color="#1565C0")  # borda simulada pela cor do toplevel
+    label.pack(padx=2, pady=2)
+
+    def _position():
+        toast.update_idletasks()
+        tw = toast.winfo_width()
+        th = toast.winfo_height()
+        rx = root.winfo_rootx()
+        ry = root.winfo_rooty()
+        rw = root.winfo_width()
+        rh = root.winfo_height()
+        x = rx + rw - tw - 10
+        y = ry + rh - th - 10
+        toast.wm_geometry(f"+{x}+{y}")
+
+    root.after(10, _position)  # aguarda render pra ter dimensões corretas
+
+    def dismiss():
+        threading.Event().wait(duration / 1000)
+        try:
+            toast.destroy()
+        except Exception:
+            pass
+
+    threading.Thread(target=dismiss, daemon=True).start()
+
+
+def show_error_dialog(root, title: str, message: str, details: str | list[str] | None = None):
+    try:
+        dlg = ctk.CTkToplevel(root)
+        dlg.title(title)
+        dlg.geometry("900x360")
+        dlg.transient(root)
+        dlg.grab_set()
+        center_window(dlg, root)
+
+        ctk.CTkLabel(dlg, text=message, font=("", 13, "bold"), text_color=COL_HIGHLIGHT).pack(anchor="w", padx=12, pady=(8, 6))
+
+        # Large monospaced textbox for details
+        txt = tk.Text(dlg, height=12, wrap="none", font=("Courier", 10))
+        txt.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        txt.configure(state="normal")
+        if details:
+            if isinstance(details, list):
+                txt.insert("1.0", "".join(details))
+            else:
+                txt.insert("1.0", str(details))
+        txt.configure(state="disabled")
+
+        btns = ctk.CTkFrame(dlg)
+        btns.pack(fill="x", padx=12, pady=8)
+
+        def do_close():
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+        def do_restart():
+            try:
+                dlg.destroy()
+            finally:
+                # Relaunch the current Python executable with same args
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        ctk.CTkButton(btns, text="OK", command=do_close, fg_color=COL_ACCENT).pack(side="right", padx=6)
+        ctk.CTkButton(btns, text="Restart", command=do_restart, fg_color=COL_HIGHLIGHT).pack(side="right")
+    except Exception:
+        # Fallback to messagebox if dialog construction fails
+        logger.exception("Failed to show error dialog")
+        try:
+            messagebox.showerror(title, message)
+        except Exception:
+            pass
+
+
+# Global exception hook: show dialog with traceback
+def _global_excepthook(exc_type, exc_value, exc_tb):
+    tb = traceback.format_exception(exc_type, exc_value, exc_tb)
+    # Log full traceback as well
+    logger.exception("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
+    # Try to attach to a root window if possible
+    root = None
+    try:
+        root = tk._default_root
+    except Exception:
+        root = None
+    show_error_dialog(root or tk.Tk(), "Unhandled Exception", str(exc_value), tb)
+
+sys.excepthook = _global_excepthook
+
+# threading exceptions
+def _threading_excepthook(args):
+    exc_type = args.exc_type
+    exc_value = args.exc_value
+    exc_tb = args.exc_traceback
+    _global_excepthook(exc_type, exc_value, exc_tb)
+
+try:
+    threading.excepthook = _threading_excepthook
+except Exception:
+    pass
 
 # ── Logging Setup ─────────────────────────────────────────────────────────────
 colorama.init()
@@ -1210,6 +1337,70 @@ class App(ctk.CTk):
         self._build_menu()
         self._build_ui()
 
+    def report_callback_exception(self, exc, val, tb):
+        # Called by Tkinter for exceptions in callbacks
+        try:
+            tb_lines = traceback.format_exception(exc, val, tb)
+            show_error_dialog(self, "Application Error", str(val), tb_lines)
+        except Exception:
+            logger.exception("Failed while reporting callback exception")
+
+    def _set_title_with_path(self, path: str):
+        # Truncate the start of the path if too long; keep last 2 folders + file
+        try:
+            p = Path(path)
+            parts = [p.drive] + list(p.parts[1:]) if p.drive else list(p.parts)
+            # Use only last 3 components (two folders + filename)
+            if len(parts) > 3:
+                display = os.path.join("...", *parts[-3:])
+            else:
+                display = path
+            self.title(f"GameList Editor — {display}")
+        except Exception:
+            self.title(f"GameList Editor — {os.path.basename(path)}")
+
+    def _show_about(self):
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("About")
+        dlg.geometry("540x300")
+        dlg.transient(self)
+        center_window(dlg, self)
+        dlg.grab_set()
+
+        # Icon if available
+        try:
+            ico = Image.open(get_asset_path("icons/app_icon.ico"))
+            img = ctk.CTkImage(ico, size=(64, 64))
+            ctk.CTkLabel(dlg, image=img, text="").pack(pady=(12, 4))
+        except Exception:
+            pass
+
+        # Version
+        ver = "?"
+        try:
+            ver = open(get_asset_path("VERSION")).read().strip()
+        except Exception:
+            try:
+                ver = open("VERSION").read().strip()
+            except Exception:
+                pass
+
+        ctk.CTkLabel(dlg, text=f"gamelistify — version {ver}", font=("", 13, "bold")).pack(pady=(6, 4))
+
+        about_text = (
+            "Author: Marcelo Frau\n"
+            "Co-authors: Copilot, Claude Code, Gemini\n"
+            "Icons: icons8\n\n"
+            "Project: https://github.com/tres-por-dez/gamelistify"
+        )
+        txt = ctk.CTkLabel(dlg, text=about_text, justify="left")
+        txt.pack(padx=12, pady=6)
+
+        def open_proj():
+            webbrowser.open("https://github.com/tres-por-dez/gamelistify")
+
+        ctk.CTkButton(dlg, text="Open Project Page", command=open_proj, fg_color=COL_ACCENT).pack(pady=10)
+
     # ── Menu ──────────────────────────────────────────────────────────────────
 
     def _build_menu(self):
@@ -1263,6 +1454,11 @@ class App(ctk.CTk):
         om.add_separator()
         om.add_command(label="Manage Folder Icons…", command=self._manage_folder_icons)
 
+        # Help / About
+        hm = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=hm)
+        hm.add_command(label="About", command=self._show_about)
+
         self.bind("<Control-o>", lambda e: self._open_file())
         self.bind("<Control-s>", lambda e: self._save())
         self.bind("<Control-a>", lambda e: self._select_all())
@@ -1280,6 +1476,7 @@ class App(ctk.CTk):
         if hasattr(self, '_filter_entry'):
             self._filter_entry.focus()
 
+
     # ── UI Layout ─────────────────────────────────────────────────────────────
 
     def _build_ui(self):
@@ -1293,19 +1490,19 @@ class App(ctk.CTk):
 
         open_btn = ctk.CTkButton(toolbar, image=self.icon_open, text="", width=40, command=self._open_file, compound="left")
         open_btn.pack(side="left", padx=4, pady=6)
-        # ctk.CTkToolTip(open_btn, "Open gamelist.xml")
+        CTkToolTip(open_btn, "Open gamelist.xml (Ctrl+O)")
 
         save_btn = ctk.CTkButton(toolbar, image=self.icon_save, text="", width=40, fg_color=COL_ACCENT, command=self._save, compound="left")
         save_btn.pack(side="left", padx=2, pady=6)
-        # ctk.CTkToolTip(save_btn, "Save")
+        CTkToolTip(save_btn, "Save (Ctrl+S)")
 
         reload_btn = ctk.CTkButton(toolbar, image=self.icon_reload, text="", width=40, fg_color=COL_ACCENT, command=self._reload, compound="left")
         reload_btn.pack(side="left", padx=2, pady=6)
-        # ctk.CTkToolTip(reload_btn, "Reload from disk")
+        CTkToolTip(reload_btn, "Reload from disk")
 
         self.tools_btn = ctk.CTkButton(toolbar, image=self.icon_tools, text="Tools", width=40)
         self.tools_btn.pack(side="left", padx=2, pady=6)
-        # ctk.CTkToolTip(self.tools_btn, "Tools")
+        CTkToolTip(self.tools_btn, "Tools")
         self.tools_btn.bind("<Button-1>", self._show_tools_menu)
 
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8, pady=4)
@@ -1422,6 +1619,7 @@ class App(ctk.CTk):
             initialdir=settings.get("last_gamelist_dir", os.path.expanduser("~")),
             filetypes=[("GameList XML", "gamelist.xml"), ("XML files", "*.xml"), ("All", "*.*")]
         )
+        
         if path:
             self._load_gamelist(path)
 
@@ -1430,30 +1628,47 @@ class App(ctk.CTk):
             gl = GameList(path)
             gl.load()
             self._gamelist = gl
+            # Update window title to include the file (truncated)
+            try:
+                self._set_title_with_path(path)
+            except Exception:
+                pass
             settings.set("last_gamelist_dir", os.path.dirname(path))
             settings.add_recent(path)
             self._update_recent_menu()
             self._apply_filter()
             self._status(f"Loaded {len(gl)} entries from {path}")
             logger.info(f"Loaded gamelist with {len(gl)} entries from {path}")
+            try:
+                show_toast(self, f"Opened {os.path.basename(path)}")
+            except Exception:
+                pass
         except Exception as e:
-            logger.error(f"Failed to load gamelist from {path}: {str(e)}")
-            messagebox.showerror("Load Error", str(e))
+            logger.exception(f"Failed to load gamelist from {path}")
+            tb = traceback.format_exc()
+            show_error_dialog(self, "Load Error", str(e), tb)
 
     def _reload(self):
         if self._gamelist:
             self._load_gamelist(self._gamelist.xml_path)
+            try:
+                show_toast(self, "Reloaded gamelist from disk")
+            except Exception:
+                pass
 
     def _save(self):
         if not self._gamelist:
             return
         try:
             self._gamelist.save(backup=True)
-            self._status(f"Saved — backup written to {self._gamelist.xml_path}.bak")
+            self._status(f"Saved — backup created")
             logger.info(f"Saved gamelist to {self._gamelist.xml_path} with backup")
+            
+            show_toast(self, "File saved successfully.")
         except Exception as e:
-            logger.error(f"Failed to save gamelist: {str(e)}")
-            messagebox.showerror("Save Error", str(e))
+            logger.exception("Failed to save gamelist")
+            tb = traceback.format_exc()
+            show_error_dialog(self, "Save Error", str(e), tb)
 
     def _save_as(self):
         if not self._gamelist:
@@ -1466,6 +1681,10 @@ class App(ctk.CTk):
         if path:
             self._gamelist.save_as(path)
             self._status(f"Saved as {path}")
+            try:
+                show_toast(self, f"Saved as {os.path.basename(path)}")
+            except Exception:
+                pass
 
     # ── Table population ──────────────────────────────────────────────────────
 
@@ -1644,6 +1863,10 @@ class App(ctk.CTk):
         self._gamelist.remove_games(sel)
         self._apply_filter()
         self._status(f"Deleted {len(sel)} entries")
+        try:
+            show_toast(self, f"Deleted {len(sel)} entries")
+        except Exception:
+            pass
 
     def _add_manual(self):
         if not self._gamelist:
@@ -1654,6 +1877,10 @@ class App(ctk.CTk):
         dlg = GameEditDialog(self, g, self._gamelist)
         self.wait_window(dlg)
         self._apply_filter()
+        try:
+            show_toast(self, "Added new game")
+        except Exception:
+            pass
 
     def _set_name_from_filename(self):
         sel = self._selected_game_objects()
@@ -1669,43 +1896,102 @@ class App(ctk.CTk):
         self._apply_filter()
         self._status(f"Set name from filename for {len(sel)} games")
         logger.info(f"Set name from filename for {len(sel)} games")
+        try:
+            show_toast(self, f"Updated names for {len(sel)} games")
+        except Exception:
+            pass
 
     def _batch_favorite(self):
         if not self._gamelist:
             logger.warning("No gamelist loaded for batch favorite")
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
-        dlg = BatchFavoriteDialog(self)
-        self.wait_window(dlg)
-        logger.info("Batch favorite dialog opened")
+        try:
+            try:
+                show_toast(self, "Opening Batch Favorite dialog")
+            except Exception:
+                pass
+            dlg = BatchFavoriteDialog(self)
+            self.wait_window(dlg)
+            logger.info("Batch favorite dialog opened")
+            try:
+                show_toast(self, "Batch Favorite finished")
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Error during batch favorite")
 
     def _detect_duplicates(self):
         if not self._gamelist:
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
-        dlg = DetectDuplicatesDialog(self)
-        self.wait_window(dlg)
+        try:
+            try:
+                show_toast(self, "Detecting duplicates")
+            except Exception:
+                pass
+            dlg = DetectDuplicatesDialog(self)
+            self.wait_window(dlg)
+            try:
+                show_toast(self, "Detect duplicates finished")
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Error in duplicate detection")
 
     def _detect_bad_versions(self):
         if not self._gamelist:
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
-        dlg = DetectBadVersionsDialog(self)
-        self.wait_window(dlg)
+        try:
+            try:
+                show_toast(self, "Detecting bad versions")
+            except Exception:
+                pass
+            dlg = DetectBadVersionsDialog(self)
+            self.wait_window(dlg)
+            try:
+                show_toast(self, "Detect bad versions finished")
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Error detecting bad versions")
 
     def _review_hidden_favorites(self):
         if not self._gamelist:
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
-        dlg = ReviewHiddenFavoritesDialog(self)
-        self.wait_window(dlg)
+        try:
+            try:
+                show_toast(self, "Reviewing hidden & favorites")
+            except Exception:
+                pass
+            dlg = ReviewHiddenFavoritesDialog(self)
+            self.wait_window(dlg)
+            try:
+                show_toast(self, "Review finished")
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Error reviewing hidden & favorites")
 
     def _manage_folder_icons(self):
         if not self._gamelist:
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
-        dlg = FolderIconManagerDialog(self)
-        self.wait_window(dlg)
+        try:
+            try:
+                show_toast(self, "Opening Folder Icons manager")
+            except Exception:
+                pass
+            dlg = FolderIconManagerDialog(self)
+            self.wait_window(dlg)
+            try:
+                show_toast(self, "Folder icons manager closed")
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Error in folder icon manager")
 
     # ── ROM Scanner ───────────────────────────────────────────────────────────
 
@@ -1717,6 +2003,10 @@ class App(ctk.CTk):
             self._apply_filter()
             self._status(f"Added {count} ROMs to gamelist (not saved yet)")
         RomScannerDialog(self, self._gamelist, on_add_cb=on_add)
+        try:
+            show_toast(self, "ROM scan started")
+        except Exception:
+            pass
 
     # ── Scraper ───────────────────────────────────────────────────────────────
 
@@ -1767,6 +2057,10 @@ class App(ctk.CTk):
             try:
                 cmd = build_skyscraper_command(platform, rom_abs, roms_dir)
                 ScraperDialog(self, cmd, title=f"Scraping — {g.name}")
+                try:
+                    show_toast(self, f"Scraping: {g.name}")
+                except Exception:
+                    pass
             except FileNotFoundError as e:
                 messagebox.showerror("Error", str(e))
                 return
@@ -1792,13 +2086,24 @@ class App(ctk.CTk):
         try:
             cmd = build_skyscraper_bulk_command(platform, roms_dir)
             ScraperDialog(self, cmd, title=f"Bulk Scrape — {platform}")
+            try:
+                show_toast(self, "Bulk scrape started")
+            except Exception:
+                pass
         except FileNotFoundError as e:
             messagebox.showerror("Error", str(e))
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
     def _open_settings(self):
-        SettingsDialog(self)
+        try:
+            SettingsDialog(self)
+            try:
+                show_toast(self, "Settings opened")
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Failed to open settings dialog")
 
     # ── Status bar helper ─────────────────────────────────────────────────────
 

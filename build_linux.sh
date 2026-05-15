@@ -2,7 +2,7 @@
 set -e
 
 APP_VERSION=$(cat VERSION 2>/dev/null || echo "000")
-APP_NAME="gamelistify_v${APP_VERSION}"
+APP_NAME="gamelistify_linux_v${APP_VERSION}"
 
 uv pip install -r requirements.txt
 uv add --dev pyinstaller
@@ -27,3 +27,5 @@ uv run pyinstaller --onefile \
     --hidden-import PIL._tkinter_finder \
     --name="${APP_NAME}" \
     main.py
+
+tar -czvf "dist/${APP_NAME}.tar.gz" -C dist "${APP_NAME}"
