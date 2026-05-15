@@ -39,8 +39,10 @@ class Game:
             child = etree.SubElement(self._el, field)
         new_val = str(value).strip()
         if child.text != new_val:
+            old_val = child.text
             child.text = new_val
             self._dirty = True
+            logger.debug(f"Game field changed: {field} from {old_val!r} to {new_val!r} for {self.name}")
 
     def delete_field(self, field: str):
         child = self._el.find(field)
@@ -100,6 +102,7 @@ class GameList:
         self.games: list[Game] = []
         self._path_index: dict[str, Game] = {}
         self._loaded = False
+        self._dirty = False
         logger.info(f"Initialized GameList for {xml_path}")
 
     def load(self):
@@ -126,6 +129,17 @@ class GameList:
     def reload(self):
         self.load()
 
+    def has_unsaved_changes(self) -> bool:
+        if self._dirty:
+            return True
+        return any(getattr(g, '_dirty', False) for g in self.games)
+
+    def mark_saved(self):
+        self._dirty = False
+        for g in self.games:
+            if hasattr(g, '_dirty'):
+                g._dirty = False
+
     # ── mutations ────────────────────────────────────────────────────────────
 
     def add_game(self, fields: dict) -> Game:
@@ -137,6 +151,7 @@ class GameList:
                 g.set(k, v)
         self.games.append(g)
         self._path_index[g.path] = g
+        self._dirty = True
         logger.info(f"Added new game: {g.name} ({g.path})")
         return g
 
@@ -148,6 +163,7 @@ class GameList:
                 g.set(k, v)
         self.games.append(g)
         self._path_index[g.path] = g
+        self._dirty = True
         logger.info(f"Added new folder: {g.name} ({g.path})")
         return g
 
@@ -156,6 +172,7 @@ class GameList:
         if game in self.games:
             self.games.remove(game)
         self._path_index.pop(game.path, None)
+        self._dirty = True
 
     def remove_games(self, game_list: list):
         for g in game_list:
@@ -167,6 +184,7 @@ class GameList:
     # ── save ─────────────────────────────────────────────────────────────────
 
     def save(self, backup=True):
+        logger.debug(f"Saving gamelist.xml to {self.xml_path} (backup={backup})")
         # Prepare new content in-memory for comparison
         etree.indent(self._root, space="  ")
         buf = io.BytesIO()
@@ -194,13 +212,14 @@ class GameList:
                     bak_name = f"{base}.{ts}.bak"
                 bak_path = os.path.join(dirn, bak_name)
                 shutil.copy2(self.xml_path, bak_path)
+                logger.debug(f"Created backup file: {bak_path}")
             else:
-                # no changes — skip creating a new backup
-                pass
+                logger.debug("No changes detected; backup skipped")
 
         # Finally write the new content to disk
         with open(self.xml_path, "wb") as out:
             out.write(new_bytes)
+        self.mark_saved()
 
     def save_as(self, path: str):
         etree.indent(self._root, space="  ")
@@ -210,6 +229,7 @@ class GameList:
             xml_declaration=True,
             encoding="UTF-8",
         )
+        self.mark_saved()
 
     # ── media resolution ──────────────────────────────────────────────────────
 

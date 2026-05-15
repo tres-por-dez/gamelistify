@@ -87,7 +87,14 @@ def show_error_dialog(root, title: str, message: str, details: str | list[str] |
         ctk.CTkLabel(dlg, text=message, font=("", 13, "bold"), text_color=COL_HIGHLIGHT).pack(anchor="w", padx=12, pady=(8, 6))
 
         # Large monospaced textbox for details
-        txt = tk.Text(dlg, height=12, wrap="none", font=("Courier", 10))
+        txt = ctk.CTkTextbox(
+            dlg,
+            height=12,
+            wrap="none",
+            font=("Courier", 10),
+            fg_color=COL_PANEL,
+            text_color=COL_TEXT,
+        )
         txt.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         txt.configure(state="normal")
         if details:
@@ -172,9 +179,11 @@ class ColoredFormatter(logging.Formatter):
 formatter = ColoredFormatter('%(asctime)s - %(levelname)s - %(message)s')
 handler = logging.StreamHandler()
 handler.setFormatter(formatter)
-logging.getLogger().addHandler(handler)
-logging.getLogger().setLevel(logging.INFO)
+root_logger = logging.getLogger()
+root_logger.addHandler(handler)
+root_logger.setLevel(logging.DEBUG if settings.get("debug_logging", False) else logging.INFO)
 logger = logging.getLogger(__name__)
+logger.debug(f"Logging initialized at {'DEBUG' if root_logger.level == logging.DEBUG else 'INFO'} level")
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -271,6 +280,9 @@ class SettingsDialog(ctk.CTkToplevel):
         self._prev_var = ctk.StringVar(value=str(settings.get("image_preview_size", 220)))
         ctk.CTkEntry(self, textvariable=self._prev_var, width=100).pack(anchor="w", padx=14)
 
+        self._debug_var = ctk.BooleanVar(value=settings.get("debug_logging", False))
+        ctk.CTkCheckBox(self, text="Enable debug logging", variable=self._debug_var).pack(anchor="w", padx=14, pady=(10, 0))
+
         btnrow = ctk.CTkFrame(self, fg_color="transparent")
         btnrow.pack(side="bottom", pady=14, padx=14, fill="x")
         ctk.CTkButton(btnrow, text="Save", command=self._save, fg_color=COL_HIGHLIGHT).pack(side="right", padx=4)
@@ -285,6 +297,11 @@ class SettingsDialog(ctk.CTkToplevel):
         settings.set("skyscraper_bin", self._sky_var.get())
         settings.set("screenscraper_user", self._user_var.get())
         settings.set("screenscraper_pass", self._pass_var.get())
+        settings.set("debug_logging", self._debug_var.get())
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG if self._debug_var.get() else logging.INFO)
+        if hasattr(self.master, "_debug_enabled"):
+            self.master._debug_enabled.set(self._debug_var.get())
         try:
             settings.set("image_preview_size", int(self._prev_var.get()))
         except ValueError:
@@ -843,9 +860,10 @@ class FolderIconManagerDialog(ctk.CTkToplevel):
                 img.thumbnail((200, 200), Image.Resampling.LANCZOS)
                 self._current_icon_img = ctk.CTkImage(img, size=(200, 200))
                 self._current_icon_label.configure(image=self._current_icon_img, text="")
-            except Exception as e:
-                logger.warning(f"Failed to load current icon: {e}")
-                self._current_icon_label.configure(text="Error loading icon")
+            except Exception:
+                logger.exception("Failed to load current icon")
+                self._current_icon_label.configure(image=None, text="Error loading icon")
+                self._current_icon_img = None
         else:
             self._current_icon_label.configure(image=None, text="No icon")
             self._current_icon_img = None
@@ -902,8 +920,8 @@ class FolderIconManagerDialog(ctk.CTkToplevel):
             img.thumbnail((200, 200), Image.Resampling.LANCZOS)
             self._new_icon_img = ctk.CTkImage(img, size=(200, 200))
             self._new_icon_label.configure(image=self._new_icon_img, text="")
-        except Exception as e:
-            logger.warning(f"Failed to load preview icon: {e}")
+        except Exception:
+            logger.exception("Failed to load preview icon")
             self._new_icon_img = None
             self._selected_icon_path = None
             try:
@@ -979,6 +997,7 @@ class GameEditDialog(ctk.CTkToplevel):
         self._thumb_img = None
         self._build()
         self._populate()
+        self._initial_values = self.game.as_dict()
 
     def _build(self):
         self.grid_columnconfigure(0, weight=1)
@@ -1107,6 +1126,7 @@ class GameEditDialog(ctk.CTkToplevel):
         self._orphan_box.configure(state="disabled")
 
     def _save(self):
+        changes = []
         for field, var in self._vars.items():
             if isinstance(var, tuple) and var[0] == "textbox":
                 val = var[1].get("1.0", "end").strip()
@@ -1114,7 +1134,17 @@ class GameEditDialog(ctk.CTkToplevel):
                 val = "true" if var.get() else "false"
             else:
                 val = var.get().strip()
-            self.game.set(field, val)
+            old_val = self.game.get(field, "")
+            if old_val != val:
+                self.game.set(field, val)
+                changes.append((field, old_val, val))
+        if changes:
+            logger.info(
+                f"Saved changes for game {self.game.name}: "
+                + ", ".join(f"{f}: {o!r} -> {n!r}" for f, o, n in changes)
+            )
+        else:
+            logger.debug(f"No changes saved for game {self.game.name}")
         self.destroy()
 
 
@@ -1305,6 +1335,7 @@ class App(ctk.CTk):
         self._preview_img = None
         self._sort_col = "name"
         self._sort_rev = False
+        self._debug_enabled = tk.BooleanVar(value=settings.get("debug_logging", False))
 
         # Load icons
         try:
@@ -1336,6 +1367,7 @@ class App(ctk.CTk):
 
         self._build_menu()
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._confirm_exit)
 
     def report_callback_exception(self, exc, val, tb):
         # Called by Tkinter for exceptions in callbacks
@@ -1419,7 +1451,7 @@ class App(ctk.CTk):
         fm.add_cascade(label="Recent Files", menu=self._recent_menu)
         self._update_recent_menu()
         fm.add_separator()
-        fm.add_command(label="Exit", command=self.quit)
+        fm.add_command(label="Exit", command=self._confirm_exit)
 
         em = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Edit", menu=em)
@@ -1436,12 +1468,18 @@ class App(ctk.CTk):
 
         sm = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Scrape", menu=sm)
-        sm.add_command(label="Scrape Selected…", command=self._scrape_selected)
-        sm.add_command(label="Scrape All (bulk)…", command=self._scrape_bulk)
+        sm.add_command(label="Scrape Selected…", command=self._scrape_selected, state="disabled")
+        sm.add_command(label="Scrape All (bulk)…", command=self._scrape_bulk, state="disabled")
 
         vm = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="View", menu=vm)
-        vm.add_command(label="Scan ROMs…", command=self._scan_roms)
+        vm.add_command(label="Scan ROMs…", command=self._scan_roms, state="disabled")
+        vm.add_checkbutton(
+            label="Enable Debug Logging",
+            variable=self._debug_enabled,
+            onvalue=True, offvalue=False,
+            command=self._toggle_debug_logging,
+        )
 
         om = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Tools", menu=om)
@@ -1465,6 +1503,7 @@ class App(ctk.CTk):
         self.bind("<Control-d>", lambda e: self._delete_selected())
         self.bind("<Control-i>", lambda e: self._invert_selection())
         self.bind("<Control-f>", lambda e: self._focus_filter())
+        self.bind("<Control-Shift-d>", lambda e: self._toggle_debug_logging())
 
     def _update_recent_menu(self):
         self._recent_menu.delete(0, "end")
@@ -1475,6 +1514,14 @@ class App(ctk.CTk):
     def _focus_filter(self):
         if hasattr(self, '_filter_entry'):
             self._filter_entry.focus()
+
+    def _toggle_debug_logging(self):
+        enabled = self._debug_enabled.get()
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG if enabled else logging.INFO)
+        settings.set("debug_logging", enabled)
+        self._status(f"Debug logging {'enabled' if enabled else 'disabled'}")
+        logger.info(f"Debug logging {'enabled' if enabled else 'disabled'}")
 
 
     # ── UI Layout ─────────────────────────────────────────────────────────────
@@ -1514,9 +1561,17 @@ class App(ctk.CTk):
 
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8, pady=4)
 
-        ctk.CTkButton(toolbar, image=self.icon_scan, text="Scan ROMs", width=100, command=self._scan_roms, compound="left").pack(side="left", padx=2, pady=6)
-        ctk.CTkButton(toolbar, image=self.icon_scrape, text="Scrape Sel.", width=100, command=self._scrape_selected, compound="left").pack(side="left", padx=2, pady=6)
-        ctk.CTkButton(toolbar, image=self.icon_scrape, text="Scrape All", width=100, command=self._scrape_bulk, compound="left").pack(side="left", padx=2, pady=6)
+        scan_btn = ctk.CTkButton(toolbar, image=self.icon_scan, text="Scan ROMs", width=100, command=self._scan_roms, compound="left", state="disabled")
+        scan_btn.pack(side="left", padx=2, pady=6)
+        CTkToolTip(scan_btn, "Not implemented yet")
+
+        scrape_sel_btn = ctk.CTkButton(toolbar, image=self.icon_scrape, text="Scrape Sel.", width=100, command=self._scrape_selected, compound="left", state="disabled")
+        scrape_sel_btn.pack(side="left", padx=2, pady=6)
+        CTkToolTip(scrape_sel_btn, "Not implemented yet")
+
+        scrape_all_btn = ctk.CTkButton(toolbar, image=self.icon_scrape, text="Scrape All", width=100, command=self._scrape_bulk, compound="left", state="disabled")
+        scrape_all_btn.pack(side="left", padx=2, pady=6)
+        CTkToolTip(scrape_all_btn, "Not implemented yet")
 
         # Search / filter
         ctk.CTkLabel(toolbar, text="Filter:").pack(side="right", padx=(4, 2))
@@ -1575,23 +1630,39 @@ class App(ctk.CTk):
         self._tree.bind("<Control-Next>", self._page_down)
         self._tree.bind("<Control-End>", self._select_last)
         self._tree.bind("<Control-Home>", self._select_first)
+        self._tree.bind("h", self._on_toggle_hidden)
+        self._tree.bind("H", self._on_toggle_hidden)
+        self._tree.bind("u", lambda e: self._bulk_set_flag("hidden", False))
+        self._tree.bind("U", lambda e: self._bulk_set_flag("hidden", False))
+        self._tree.bind("f", self._on_toggle_favorite)
+        self._tree.bind("F", self._on_toggle_favorite)
+        self._tree.bind("g", lambda e: self._bulk_set_flag("favorite", False))
+        self._tree.bind("G", lambda e: self._bulk_set_flag("favorite", False))
 
         # Right panel — preview + quick edit
-        right = ctk.CTkFrame(main, fg_color=COL_PANEL, corner_radius=0, width=260)
+        right = ctk.CTkFrame(main, fg_color=COL_PANEL, corner_radius=0, width=310)
         right.grid(row=0, column=1, sticky="nsew")
         right.grid_propagate(False)
 
         ctk.CTkLabel(right, text="Preview", font=("", 13, "bold")).pack(pady=(10, 4))
 
-        self._preview_label = ctk.CTkLabel(right, text="No selection", width=240, height=240)
+        self._preview_label = ctk.CTkLabel(right, text="No selection", width=260, height=260)
         self._preview_label.pack(padx=10)
 
-        self._info_box = ctk.CTkTextbox(right, height=160, state="disabled", font=("", 11))
-        self._info_box.pack(fill="x", padx=8, pady=6)
+        self._info_box = ctk.CTkTextbox(
+            right,
+            state="disabled",
+            font=("", 11),
+            fg_color=COL_PANEL,
+            text_color=COL_TEXT,
+            wrap="word",
+        )
+        self._info_box.pack(fill="both", expand=True, padx=8, pady=6)
 
         ctk.CTkButton(right, text="Edit…", fg_color=COL_ACCENT, command=self._edit_selected).pack(pady=4)
         ctk.CTkButton(right, text="Scrape This Game", fg_color=COL_HIGHLIGHT,
-                      command=self._scrape_selected).pack(pady=2)
+                      command=self._scrape_selected, state="disabled").pack(pady=2)
+        
 
         # ── Status bar ────────────────────────────────────────────────────────
         self._status_var = tk.StringVar(value="No gamelist loaded.")
@@ -1625,6 +1696,7 @@ class App(ctk.CTk):
 
     def _load_gamelist(self, path: str):
         try:
+            logger.info(f"Opening gamelist: {path}")
             gl = GameList(path)
             gl.load()
             self._gamelist = gl
@@ -1660,9 +1732,11 @@ class App(ctk.CTk):
         if not self._gamelist:
             return
         try:
+            logger.info(f"Saving gamelist to {self._gamelist.xml_path}")
             self._gamelist.save(backup=True)
             self._status(f"Saved — backup created")
             logger.info(f"Saved gamelist to {self._gamelist.xml_path} with backup")
+            logger.debug("Save operation completed successfully")
             
             show_toast(self, "File saved successfully.")
         except Exception as e:
@@ -1679,8 +1753,10 @@ class App(ctk.CTk):
             initialfile="gamelist.xml",
         )
         if path:
+            logger.info(f"Saving gamelist as {path}")
             self._gamelist.save_as(path)
             self._status(f"Saved as {path}")
+            logger.debug(f"Save-As operation completed to {path}")
             try:
                 show_toast(self, f"Saved as {os.path.basename(path)}")
             except Exception:
@@ -1691,6 +1767,7 @@ class App(ctk.CTk):
     def _apply_filter(self, *_):
         if not self._gamelist:
             return
+        selected_iids = set(self._tree.selection()) if hasattr(self, '_tree') else set()
         query = self._filter_var.get().lower()
         show_hidden = self._show_hidden_var.get()
 
@@ -1715,6 +1792,12 @@ class App(ctk.CTk):
 
         self._filtered_games = games
         self._populate_tree(games)
+        if selected_iids:
+            valid = [iid for iid in selected_iids if self._tree.exists(iid)]
+            if valid:
+                self._tree.selection_set(valid)
+                self._tree.focus(valid[0])
+                self._tree.see(valid[0])
 
     def _populate_tree(self, games: list[Game]):
         self._tree.delete(*self._tree.get_children())
@@ -1801,6 +1884,7 @@ class App(ctk.CTk):
         sel = self._selected_game_objects()
         if not sel:
             return
+        logger.debug(f"Selected {len(sel)} game(s): {[g.name for g in sel]}")
         g = sel[0]
         # Update preview
         img_raw = g.get("image")
@@ -1814,6 +1898,7 @@ class App(ctk.CTk):
             else:
                 self._preview_label.configure(image=None)
         # Info box
+        desc = g.get("desc") or ""
         info = (
             f"Name:   {g.name}\n"
             f"Genre:  {g.get('genre')}\n"
@@ -1822,7 +1907,7 @@ class App(ctk.CTk):
             f"Year:   {g.get('releasedate', '')[:10]}\n"
             f"Rating: {format_rating(g.get('rating'))}\n"
             f"Hidden: {g.hidden} | Fav: {g.favorite}\n\n"
-            + (g.get("desc")[:200] + "…" if len(g.get("desc")) > 200 else g.get("desc"))
+            f"{desc}"
         )
         self._info_box.configure(state="normal")
         self._info_box.delete("1.0", "end")
@@ -1846,23 +1931,91 @@ class App(ctk.CTk):
         sel = self._selected_game_objects()
         if not sel:
             return
+        changed = []
         for g in sel:
-            g.set(field, "true" if value else "false")
+            new_val = "true" if value else "false"
+            old_val = g.get(field, "false")
+            if old_val != new_val:
+                g.set(field, new_val)
+                changed.append(g)
+                logger.debug(f"Bulk update {field} for {g.name} ({g.path}): {old_val} -> {new_val}")
+            else:
+                logger.debug(f"Bulk update {field} skipped for {g.name} ({g.path}); already {new_val}")
         self._apply_filter()
-        self._status(f"Set {field}={'true' if value else 'false'} on {len(sel)} games")
+        self._restore_tree_focus()
+        self._status(f"Set {field}={'true' if value else 'false'} on {len(changed)} games")
+        logger.info(f"Bulk set {field}={'true' if value else 'false'} for {len(changed)} selected game(s)")
+
+    def _toggle_flag(self, field: str):
+        sel = self._selected_game_objects()
+        if not sel:
+            return
+        changed = []
+        for g in sel:
+            current = g.get(field, "false").lower() in ("true", "1", "yes")
+            new_val = "false" if current else "true"
+            g.set(field, new_val)
+            changed.append((g, current, new_val))
+            logger.debug(f"Toggled {field} for {g.name} ({g.path}): {current} -> {new_val}")
+        self._apply_filter()
+        self._restore_tree_focus()
+        self._status(f"Toggled {field} for {len(changed)} games")
+        logger.info(f"Toggled {field} for {len(changed)} selected game(s)")
+
+    def _on_toggle_hidden(self, event=None):
+        self._toggle_flag("hidden")
+        return "break"
+
+    def _on_toggle_favorite(self, event=None):
+        self._toggle_flag("favorite")
+        return "break"
+
+    def _restore_tree_focus(self):
+        selection = self._tree.selection()
+        if selection:
+            self._tree.focus(selection[0])
+            self._tree.see(selection[0])
+        self._tree.focus_set()
+
+    def _confirm_exit(self):
+        if not self._gamelist or not self._gamelist.has_unsaved_changes():
+            self.destroy()
+            return
+
+        result = messagebox.askyesnocancel(
+            "Unsaved changes",
+            "There are unsaved changes. Save before exiting?",
+            parent=self,
+        )
+        if result is True:
+            try:
+                self._save()
+                if not self._gamelist.has_unsaved_changes():
+                    self.destroy()
+            except Exception:
+                pass
+        elif result is False:
+            self.destroy()
+        else:
+            # Cancel: do nothing
+            return
 
     def _delete_selected(self):
         sel = self._selected_game_objects()
         if not sel:
             return
+        names = [g.name for g in sel]
+        logger.info(f"Deleting {len(sel)} selected game(s): {names}")
         if not messagebox.askyesno(
             "Delete entries",
             f"Remove {len(sel)} entries from the gamelist?\n(Files on disk are NOT deleted.)"
         ):
+            logger.debug("Delete cancelled by user")
             return
         self._gamelist.remove_games(sel)
         self._apply_filter()
         self._status(f"Deleted {len(sel)} entries")
+        logger.info(f"Deleted {len(sel)} games from gamelist")
         try:
             show_toast(self, f"Deleted {len(sel)} entries")
         except Exception:
@@ -1872,11 +2025,12 @@ class App(ctk.CTk):
         if not self._gamelist:
             messagebox.showinfo("No gamelist", "Open a gamelist.xml first.")
             return
-        # Create a blank game and open the editor
+        logger.info("Adding new manual game entry")
         g = self._gamelist.add_game({"path": "./newgame", "name": "New Game"})
         dlg = GameEditDialog(self, g, self._gamelist)
         self.wait_window(dlg)
         self._apply_filter()
+        logger.info(f"Manual game added: {g.name} ({g.path})")
         try:
             show_toast(self, "Added new game")
         except Exception:

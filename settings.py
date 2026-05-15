@@ -16,6 +16,7 @@ _defaults = {
     "last_gamelist_dir": "",
     "theme": "dark",
     "image_preview_size": 220,
+    "debug_logging": False,
     "recent_files": [],
     "columns_visible": {
         "name": True,
