@@ -17,14 +17,18 @@ LIB_PATH="${PYTHON_HOME}/lib"
 
 export LD_LIBRARY_PATH="$LIB_PATH:$LD_LIBRARY_PATH"
 
+# Localiza o diretório de bibliotecas real do Python 3.14
+PYTHON_LIB_DIR=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+TCL_V="9.0"
+
+echo "Buscando libs em: ${PYTHON_LIB_DIR}"
+
 uv run pyinstaller --onefile --windowed \
     --name="${APP_NAME}" \
     --add-data "icons:icons" \
     --collect-all tkinter \
-    --collect-all _tkinter \
-    --hidden-import=tkinter \
-    --add-binary "${LIB_PATH}/libtcl9.0.so:." \
-    --add-binary "${LIB_PATH}/libtk9.0.so:." \
+    --add-binary "${PYTHON_LIB_DIR}/libtcl${TCL_V}.so:." \
+    --add-binary "${PYTHON_LIB_DIR}/libtk${TCL_V}.so:." \
     main.py
 
 if [ $? -eq 0 ]; then
